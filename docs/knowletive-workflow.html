@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Knowletive School Management SaaS — Operational Workflow</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --card-border: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --brand: #6366f1;
+      --brand-soft: rgba(99, 102, 241, 0.15);
+      --success: #10b981;
+      --success-soft: rgba(16, 185, 129, 0.15);
+      --purple: #a855f7;
+      --purple-soft: rgba(168, 85, 247, 0.15);
+      --teal: #14b8a6;
+      --teal-soft: rgba(20, 184, 166, 0.15);
+      --amber: #f59e0b;
+      --amber-soft: rgba(245, 158, 11, 0.15);
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text-main);
+      padding: 40px 20px;
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 6px 14px;
+      background: var(--brand-soft);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    h1 {
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 10px;
+      background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    header p {
+      color: var(--text-muted);
+      font-size: 15px;
+      max-width: 650px;
+      margin: 0 auto;
+    }
+    .flow-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+      position: relative;
+    }
+    .stage-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 28px 24px;
+      position: relative;
+      transition: transform 0.2s, border-color 0.2s;
+      display: flex;
+      flex-col: column;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    }
+    .stage-card:hover {
+      transform: translateY(-3px);
+      border-color: #475569;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .icon-box {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      shrink: 0;
+    }
+    .step-tag {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .stage-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #fff;
+    }
+    .stage-desc {
+      color: var(--text-muted);
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+    .action-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: auto;
+    }
+    .action-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 13px;
+      background: rgba(15, 23, 42, 0.4);
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.03);
+    }
+    .action-item span.bullet {
+      color: var(--brand);
+      font-weight: bold;
+    }
+    .c-indigo .icon-box { background: var(--brand-soft); color: #818cf8; }
+    .c-indigo .step-tag { color: #818cf8; }
+    .c-purple .icon-box { background: var(--purple-soft); color: #c084fc; }
+    .c-purple .step-tag { color: #c084fc; }
+    .c-green .icon-box { background: var(--success-soft); color: #34d399; }
+    .c-green .step-tag { color: #34d399; }
+    .c-teal .icon-box { background: var(--teal-soft); color: #2dd4bf; }
+    .c-teal .step-tag { color: #2dd4bf; }
+    .c-amber .icon-box { background: var(--amber-soft); color: #fbbf24; }
+    .c-amber .step-tag { color: #fbbf24; }
+
+    .bottom-bar {
+      margin-top: 48px;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(16, 185, 129, 0.1) 100%);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 24px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+    .bottom-bar h3 {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    .bottom-bar p {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .print-btn {
+      background: #fff;
+      color: #0f172a;
+      border: none;
+      padding: 10px 20px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .print-btn:hover {
+      opacity: 0.9;
+    }
+    @media print {
+      body { background: #fff; color: #000; padding: 0; }
+      .stage-card { border: 1px solid #ccc; background: #fafafa; color: #000; box-shadow: none; break-inside: avoid; }
+      .stage-title { color: #000; }
+      .stage-desc, .bottom-bar p { color: #555; }
+      .action-item { background: #fff; border: 1px solid #eee; color: #222; }
+      .print-btn, .badge { display: none; }
+      h1 { -webkit-text-fill-color: initial; color: #000; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="badge">Visual Operational Guide</div>
+      <h1>Knowletive School Management SaaS</h1>
+      <p>Real-world workflow: How Principals, Teachers, Parents, and Accountants use the system.</p>
+      <div style="margin-top: 24px; text-align: center;">
+        <p style="font-size: 13px; font-weight: 600; color: #818cf8; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">Full 3-Phase Photorealistic Storyboard</p>
+        <img src="./real-storyboard-all-phases.jpg" alt="Knowletive Real People Workflow Storyboard (Phases 1-3)" style="max-width: 100%; border-radius: 16px; border: 1px solid var(--card-border); box-shadow: 0 20px 35px -10px rgba(0,0,0,0.5);" />
+      </div>
+    </header>
+
+    <div class="flow-grid">
+      <!-- Stage 1 -->
+      <div class="stage-card c-indigo">
+        <div class="card-header">
+          <div class="icon-box">🏛️</div>
+          <div>
+            <div class="step-tag">Stage 1 · Setup</div>
+            <div class="stage-title">Day 1 School Onboarding</div>
+          </div>
+        </div>
+        <img src="./real-phase1-principal-onboarding.jpg" alt="Phase 1: School Principal Onboarding" style="width:100%; border-radius:10px; margin-bottom:14px; border:1px solid rgba(255,255,255,0.08);" />
+        <p class="stage-desc">Set up school structure in 15 minutes without typing students one by one.</p>
+        <div class="action-list">
+          <div class="action-item"><span class="bullet">✓</span> <strong>Academic Setup:</strong> Create Classes (1 to 12) & Sections (A, B, C).</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>Bulk CSV Upload:</strong> Import 1,000+ students and parent contacts in 1 click.</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>Staff Invites:</strong> Add Principal, Teachers, Accountants with pre-set security roles.</div>
+        </div>
+      </div>
+
+      <!-- Stage 2 -->
+      <div class="stage-card c-purple">
+        <div class="card-header">
+          <div class="icon-box">📱</div>
+          <div>
+            <div class="step-tag">Stage 2 · Daily Routine</div>
+            <div class="stage-title">Classroom Operations & AI</div>
+          </div>
+        </div>
+        <img src="./real-phase2-teacher-classroom-attendance.jpg" alt="Phase 2: Teacher Taking Classroom Attendance" style="width:100%; border-radius:10px; margin-bottom:14px; border:1px solid rgba(255,255,255,0.08);" />
+        <p class="stage-desc">Teachers handle roll call in seconds and use offline AI for teaching.</p>
+        <div class="action-list">
+          <div class="action-item"><span class="bullet">✓</span> <strong>30-Second Roll Call:</strong> Teachers tap Present/Absent on mobile or desktop.</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>Absence Alerts:</strong> Parents receive an instant alert if their child is absent.</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>Offline Educational AI:</strong> Drafts lesson plans, quiz papers, and remarks with zero API cost.</div>
+        </div>
+      </div>
+
+      <!-- Stage 3 -->
+      <div class="stage-card c-green">
+        <div class="card-header">
+          <div class="icon-box">💳</div>
+          <div>
+            <div class="step-tag">Stage 3 · Fees & Finance</div>
+            <div class="stage-title">Zero-Fee UPI Collection</div>
+          </div>
+        </div>
+        <img src="./real-phase3-parent-upi-payment.jpg" alt="Phase 3: Parent Scanning UPI QR Code" style="width:100%; border-radius:10px; margin-bottom:14px; border:1px solid rgba(255,255,255,0.08);" />
+        <p class="stage-desc">Direct bank transfers with zero 2% payment gateway cuts.</p>
+        <div class="action-list">
+          <div class="action-item"><span class="bullet">✓</span> <strong>Instant UPI QR Code:</strong> Invoices generate dynamic QR links for parents.</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>Pay via Any App:</strong> Parents scan using GPay, PhonePe, or Paytm and submit UTR proof.</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>1-Click Settlement:</strong> Accounts staff verifies bank credit; balance updates to zero immediately.</div>
+        </div>
+      </div>
+
+      <!-- Stage 4 -->
+      <div class="stage-card c-teal">
+        <div class="card-header">
+          <div class="icon-box">👨‍👩‍👧</div>
+          <div>
+            <div class="step-tag">Stage 4 · Parent Experience</div>
+            <div class="stage-title">Parent & Student Portal</div>
+          </div>
+        </div>
+        <p class="stage-desc">Parents access attendance, fee receipts, and certificates securely.</p>
+        <div class="action-list">
+          <div class="action-item"><span class="bullet">✓</span> <strong>Strict Privacy:</strong> Parents only see their enrolled children (other students hidden).</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>Live Attendance %:</strong> Real-time tracking of days present vs total working days.</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>Document Vault:</strong> Download birth certificates, fee receipts, and term report cards.</div>
+        </div>
+      </div>
+
+      <!-- Stage 5 -->
+      <div class="stage-card c-amber">
+        <div class="card-header">
+          <div class="icon-box">🛡️</div>
+          <div>
+            <div class="step-tag">Stage 5 · Governance</div>
+            <div class="stage-title">Platform Business & Security</div>
+          </div>
+        </div>
+        <p class="stage-desc">SaaS management, bank reconciliation, and enterprise security.</p>
+        <div class="action-list">
+          <div class="action-item"><span class="bullet">✓</span> <strong>Revenue Dashboard:</strong> Track monthly recurring revenue (MRR) & subscriptions.</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>Brute-Force Lockout:</strong> Auto-locks accounts for 15 minutes after 5 failed logins.</div>
+          <div class="action-item"><span class="bullet">✓</span> <strong>Audit Trails:</strong> Every sensitive fee change or student edit is permanently recorded.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bottom-bar">
+      <div>
+        <h3>Ready to share with School Principals & Clients</h3>
+        <p>This flow demonstrates a 100% self-hosted, zero-subscription cost architecture.</p>
+      </div>
+      <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+    </div>
+  </div>
+</body>
+</html>

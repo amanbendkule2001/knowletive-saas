@@ -1,0 +1,35 @@
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules/
+.next/
+.turbo/
+dist/
+build/
+out/
+
+# TypeScript & generated files
+next-env.d.ts
+tsconfig.tsbuildinfo
+src/generated/
+
+# Local backups
+backups/
+*.dump
+*.backup
+*.bak
+
+# Logs
+*.log
+
+# OS & Temp
+.DS_Store
+Thumbs.db
+.data/
+
+# Local databases
+*.sqlite
+*.sqlite3
