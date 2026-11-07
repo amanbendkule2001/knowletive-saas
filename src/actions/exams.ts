@@ -15,7 +15,16 @@ import {
   createGradeScaleSchema,
   publishResultsSchema,
   correctPublishedMarkSchema,
+  transitionExamStatusSchema,
+  reopenEvaluatedExamSchema,
+  cancelExaminationSchema,
+  archiveExaminationSchema,
 } from "@/lib/exams-schema";
+import {
+  lockExaminationRow,
+  verifyCandidateSubjectCompleteness,
+  transitionExamStatus,
+} from "@/lib/exam-lifecycle";
 import {
   canonicalStringify,
   computeSnapshotChecksum,
@@ -157,42 +166,100 @@ export async function updateExaminationAction(input: unknown): Promise<ActionRes
   }
 
   const data = parsed.data;
-  const exam = await db.examination.findFirst({
-    where: { id: data.id, tenantId: ctx.tenant.id },
+
+  return await db.$transaction(async (tx) => {
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, data.id, ctx.tenant.id);
+    if (!lockedExam) {
+      return { ok: false, error: "Examination not found." };
+    }
+
+    // 2. Safeguard: ARCHIVED examinations are permanently frozen and immutable
+    if (lockedExam.status === "ARCHIVED") {
+      return {
+        ok: false,
+        code: "INVALID_TRANSITION",
+        error: "Archived examinations are permanently frozen and immutable. No modifications are permitted.",
+      };
+    }
+
+    // 3. Safeguard: PUBLISHED examinations protect report-card business data
+    if (lockedExam.isPublished || lockedExam.status === "PUBLISHED") {
+      if (data.status && data.status !== "PUBLISHED") {
+        return {
+          ok: false,
+          code: "INVALID_TRANSITION",
+          error: "Published examination results cannot change status directly. Use correctPublishedMarkAction or archive.",
+        };
+      }
+
+      // Verify that business grading, title, and curriculum parameters are not altered
+      const gradeScaleChanged = data.gradeScaleId && data.gradeScaleId !== lockedExam.gradeScaleId;
+      const syllabusChanged = data.syllabusTrackId !== undefined && data.syllabusTrackId !== lockedExam.syllabusTrackId;
+      const titleChanged = data.title && data.title !== lockedExam.title;
+
+      if (titleChanged) {
+        return {
+          ok: false,
+          code: "INVALID_TRANSITION",
+          error: "Cannot modify examination title for a published examination as official report cards and snapshots have already been issued with this title.",
+        };
+      }
+
+      if (gradeScaleChanged || syllabusChanged) {
+        return {
+          ok: false,
+          code: "INVALID_TRANSITION",
+          error: "Cannot modify grading scales or syllabus structure for a published examination as official report cards have already been issued.",
+        };
+      }
+    }
+
+    // 4. Lifecycle transition handling if genuine status change is requested
+    let targetStatus: ExamStatus = lockedExam.status;
+    if (data.status && data.status !== lockedExam.status) {
+      const transRes = await transitionExamStatus(tx, lockedExam.id, ctx, data.status as ExamStatus);
+      if (!transRes.ok) {
+        return { ok: false, code: transRes.code, error: transRes.error };
+      }
+      targetStatus = data.status as ExamStatus;
+    }
+
+    // 5. Update permitted metadata fields
+    await tx.examination.update({
+      where: { id: lockedExam.id },
+      data: {
+        title: data.title,
+        term: data.term,
+        instructions: data.instructions,
+        ...(lockedExam.status !== "PUBLISHED"
+          ? {
+              gradeScaleId: data.gradeScaleId ?? lockedExam.gradeScaleId,
+              syllabusTrackId: data.syllabusTrackId !== undefined ? data.syllabusTrackId : lockedExam.syllabusTrackId,
+              startDate: new Date(data.startDate),
+              endDate: new Date(data.endDate),
+            }
+          : {}),
+      },
+    });
+
+    await writeAudit(
+      {
+        tenantId: ctx.tenant.id,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        action: "exam.updated",
+        entity: "Examination",
+        entityId: lockedExam.id,
+        meta: { title: data.title, status: targetStatus },
+      },
+      tx
+    );
+
+    revalidatePath(`/app/exams/${lockedExam.id}`);
+    revalidatePath("/app/exams");
+    return { ok: true };
   });
-  if (!exam) return { ok: false, error: "Examination not found." };
-
-  if (exam.status === "PUBLISHED" && data.status && data.status !== "PUBLISHED") {
-    return { ok: false, error: "Published examination results cannot change status directly." };
-  }
-
-  await db.examination.update({
-    where: { id: exam.id },
-    data: {
-      title: data.title,
-      term: data.term,
-      instructions: data.instructions,
-      status: (data.status as ExamStatus) ?? exam.status,
-      gradeScaleId: data.gradeScaleId ?? exam.gradeScaleId,
-      syllabusTrackId: data.syllabusTrackId !== undefined ? data.syllabusTrackId : exam.syllabusTrackId,
-      startDate: new Date(data.startDate),
-      endDate: new Date(data.endDate),
-    },
-  });
-
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "exam.updated",
-    entity: "Examination",
-    entityId: exam.id,
-    meta: { title: data.title },
-  });
-
-  revalidatePath(`/app/exams/${exam.id}`);
-  revalidatePath("/app/exams");
-  return { ok: true };
 }
 
 export async function deleteExaminationAction(examId: string): Promise<ActionResult> {
@@ -200,31 +267,167 @@ export async function deleteExaminationAction(examId: string): Promise<ActionRes
   if (!auth.ok) return { ok: false, error: auth.error };
   const ctx = auth.ctx;
 
-  const exam = await db.examination.findFirst({
-    where: { id: examId, tenantId: ctx.tenant.id },
-  });
-  if (!exam) return { ok: false, error: "Examination not found." };
+  return await db.$transaction(async (tx) => {
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, examId, ctx.tenant.id);
+    if (!lockedExam) {
+      return { ok: false, error: "Examination not found." };
+    }
 
-  if (exam.isPublished || exam.status === "PUBLISHED") {
-    return { ok: false, error: "Published examinations cannot be deleted. Unpublish or archive instead." };
+    // 2. Safeguard: Only empty DRAFT examinations can be permanently deleted
+    if (lockedExam.isPublished || lockedExam.status !== "DRAFT") {
+      return {
+        ok: false,
+        code: "INVALID_TRANSITION",
+        error: `Only draft examinations can be deleted (current status: '${lockedExam.status}'). Operational examinations must be cancelled or archived.`,
+      };
+    }
+
+    // 3. Check for any operational or historical candidate/mark records
+    const [enrollmentCount, markCount, revisionEventCount, resultCount] = await Promise.all([
+      tx.examEnrollment.count({ where: { examId, tenantId: ctx.tenant.id } }),
+      tx.examMark.count({ where: { examId, tenantId: ctx.tenant.id } }),
+      tx.examMarksRevisionEvent.count({ where: { examId, tenantId: ctx.tenant.id } }),
+      tx.examResult.count({ where: { examId, tenantId: ctx.tenant.id } }),
+    ]);
+
+    if (enrollmentCount > 0 || markCount > 0 || revisionEventCount > 0 || resultCount > 0) {
+      return {
+        ok: false,
+        code: "INVALID_TRANSITION",
+        error: `Operational examinations with enrolled candidates (${enrollmentCount}), marks (${markCount}), or revision events (${revisionEventCount}) cannot be permanently deleted. Use cancellation instead.`,
+      };
+    }
+
+    // 4. Safely delete subjects and draft exam record
+    await tx.examSubject.deleteMany({ where: { examId, tenantId: ctx.tenant.id } });
+    await tx.examination.delete({ where: { id: examId } });
+
+    await writeAudit(
+      {
+        tenantId: ctx.tenant.id,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        action: "exam.deleted",
+        entity: "Examination",
+        entityId: examId,
+        meta: { id: examId },
+      },
+      tx
+    );
+
+    revalidatePath("/app/exams");
+    return { ok: true };
+  });
+}
+
+export async function transitionExamStatusAction(input: unknown): Promise<ActionResult> {
+  const auth = await authorizeTenantWrite("tenant.exams.write", "update");
+  if (!auth.ok) return { ok: false, error: auth.error };
+  const ctx = auth.ctx;
+
+  const parsed = transitionExamStatusSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message || "Validation failed" };
   }
 
-  await db.examination.delete({
-    where: { id: exam.id },
+  const { examId, requestedStatus, reason, expectedCurrentStatus } = parsed.data;
+
+  const result = await db.$transaction(async (tx) => {
+    return await transitionExamStatus(tx, examId, ctx, requestedStatus as ExamStatus, {
+      reason,
+      expectedCurrentStatus: expectedCurrentStatus as ExamStatus | undefined,
+    });
   });
 
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "exam.deleted",
-    entity: "Examination",
-    entityId: exam.id,
-    meta: { code: exam.code, title: exam.title },
-  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, error: result.error };
+  }
 
+  revalidatePath(`/app/exams/${examId}`);
   revalidatePath("/app/exams");
-  return { ok: true };
+  return { ok: true, data: result.data };
+}
+
+export async function cancelExaminationAction(input: unknown): Promise<ActionResult> {
+  const auth = await authorizeTenantWrite("tenant.exams.write", "update");
+  if (!auth.ok) return { ok: false, error: auth.error };
+  const ctx = auth.ctx;
+
+  const parsed = cancelExaminationSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message || "Validation failed" };
+  }
+
+  const { examId, reason } = parsed.data;
+
+  const result = await db.$transaction(async (tx) => {
+    return await transitionExamStatus(tx, examId, ctx, "ARCHIVED", {
+      reason,
+    });
+  });
+
+  if (!result.ok) {
+    return { ok: false, code: result.code, error: result.error };
+  }
+
+  revalidatePath(`/app/exams/${examId}`);
+  revalidatePath("/app/exams");
+  return { ok: true, data: result.data };
+}
+
+export async function reopenEvaluatedExamAction(input: unknown): Promise<ActionResult> {
+  const auth = await authorizeTenantWrite("tenant.exams.manage_grading", "update");
+  if (!auth.ok) return { ok: false, error: auth.error };
+  const ctx = auth.ctx;
+
+  const parsed = reopenEvaluatedExamSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message || "Validation failed" };
+  }
+
+  const { examId, reason } = parsed.data;
+
+  const result = await db.$transaction(async (tx) => {
+    return await transitionExamStatus(tx, examId, ctx, "IN_PROGRESS", {
+      reason,
+    });
+  });
+
+  if (!result.ok) {
+    return { ok: false, code: result.code, error: result.error };
+  }
+
+  revalidatePath(`/app/exams/${examId}`);
+  revalidatePath("/app/exams");
+  return { ok: true, data: result.data };
+}
+
+export async function archiveExaminationAction(input: unknown): Promise<ActionResult> {
+  const auth = await authorizeTenantWrite("tenant.exams.write", "update");
+  if (!auth.ok) return { ok: false, error: auth.error };
+  const ctx = auth.ctx;
+
+  const parsed = archiveExaminationSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message || "Validation failed" };
+  }
+
+  const { examId, reason } = parsed.data;
+
+  const result = await db.$transaction(async (tx) => {
+    return await transitionExamStatus(tx, examId, ctx, "ARCHIVED", {
+      reason,
+    });
+  });
+
+  if (!result.ok) {
+    return { ok: false, code: result.code, error: result.error };
+  }
+
+  revalidatePath(`/app/exams/${examId}`);
+  revalidatePath("/app/exams");
+  return { ok: true, data: result.data };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -242,11 +445,6 @@ export async function saveExamSubjectsAction(input: unknown): Promise<ActionResu
   }
 
   const { examId, subjects } = parsed.data;
-  const exam = await db.examination.findFirst({
-    where: { id: examId, tenantId: ctx.tenant.id },
-  });
-  if (!exam) return { ok: false, error: "Examination not found." };
-  if (exam.isPublished) return { ok: false, error: "Cannot modify subjects of a published exam." };
 
   // Validate that all subject IDs belong to the tenant
   const subjectIds = subjects.map((s) => s.subjectId);
@@ -257,7 +455,23 @@ export async function saveExamSubjectsAction(input: unknown): Promise<ActionResu
     return { ok: false, error: "One or more selected subjects do not exist in this institute." };
   }
 
-  await db.$transaction(async (tx) => {
+  return await db.$transaction(async (tx) => {
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, examId, ctx.tenant.id);
+    if (!lockedExam) {
+      return { ok: false, error: "Examination not found." };
+    }
+
+    if (lockedExam.status === "ARCHIVED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify subjects of an archived examination." };
+    }
+    if (lockedExam.isPublished || lockedExam.status === "PUBLISHED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify subjects of a published exam." };
+    }
+    if (lockedExam.status === "EVALUATED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify subjects of an evaluated examination. Reopen evaluation first." };
+    }
+
     // For each subject, upsert
     for (const sub of subjects) {
       await tx.examSubject.upsert({
@@ -293,27 +507,28 @@ export async function saveExamSubjectsAction(input: unknown): Promise<ActionResu
       });
     }
 
-    // If exam is in DRAFT status, move to SCHEDULED
-    if (exam.status === "DRAFT") {
-      await tx.examination.update({
-        where: { id: exam.id },
-        data: { status: "SCHEDULED" },
-      });
+    // If exam is in DRAFT status, move to SCHEDULED via state machine
+    if (lockedExam.status === "DRAFT") {
+      const transRes = await transitionExamStatus(tx, examId, ctx, "SCHEDULED");
+      if (!transRes.ok) return { ok: false, code: transRes.code, error: transRes.error };
     }
-  });
 
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "exam.subjects_configured",
-    entity: "Examination",
-    entityId: exam.id,
-    meta: { subjectCount: subjects.length },
-  });
+    await writeAudit(
+      {
+        tenantId: ctx.tenant.id,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        action: "exam.subjects_configured",
+        entity: "Examination",
+        entityId: examId,
+        meta: { subjectCount: subjects.length },
+      },
+      tx
+    );
 
-  revalidatePath(`/app/exams/${examId}`);
-  return { ok: true };
+    revalidatePath(`/app/exams/${examId}`);
+    return { ok: true };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -325,73 +540,92 @@ export async function autoEnrollEligibleStudentsAction(examId: string): Promise<
   if (!auth.ok) return { ok: false, error: auth.error };
   const ctx = auth.ctx;
 
-  const exam = await db.examination.findFirst({
-    where: { id: examId, tenantId: ctx.tenant.id },
-  });
-  if (!exam) return { ok: false, error: "Examination not found." };
-  if (exam.isPublished) return { ok: false, error: "Cannot enroll students in a published exam." };
+  return await db.$transaction(async (tx) => {
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, examId, ctx.tenant.id);
+    if (!lockedExam) return { ok: false, error: "Examination not found." };
 
-  let eligibleStudentIds: string[] = [];
-
-  if (exam.targetType === "CLASS_SECTION") {
-    if (exam.sectionId) {
-      const students = await db.student.findMany({
-        where: { tenantId: ctx.tenant.id, sectionId: exam.sectionId, status: "ACTIVE" },
-        select: { id: true },
-      });
-      eligibleStudentIds = students.map((s) => s.id);
-    } else if (exam.classId) {
-      const students = await db.student.findMany({
-        where: { tenantId: ctx.tenant.id, classId: exam.classId, status: "ACTIVE" },
-        select: { id: true },
-      });
-      eligibleStudentIds = students.map((s) => s.id);
+    if (lockedExam.status === "ARCHIVED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot enroll students in an archived examination." };
     }
-  } else if (exam.targetType === "BATCH" && exam.batchId) {
-    const enrollments = await db.batchStudent.findMany({
-      where: { batchId: exam.batchId, status: "ACTIVE" },
-      select: { studentId: true },
-    });
-    eligibleStudentIds = enrollments.map((e) => e.studentId);
-  }
+    if (lockedExam.isPublished || lockedExam.status === "PUBLISHED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot enroll students in a published exam." };
+    }
+    if (lockedExam.status === "EVALUATED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot enroll students in an evaluated examination. Reopen evaluation first." };
+    }
 
-  if (eligibleStudentIds.length === 0) {
-    return { ok: false, error: "No active eligible students found for this examination target." };
-  }
-
-  // Create enrollments skipping existing
-  let createdCount = 0;
-  for (const studentId of eligibleStudentIds) {
-    const existing = await db.examEnrollment.findUnique({
-      where: {
-        examId_studentId: { examId, studentId },
-      },
+    const exam = await tx.examination.findUnique({
+      where: { id: examId },
+      select: { targetType: true, sectionId: true, classId: true, batchId: true },
     });
-    if (!existing) {
-      await db.examEnrollment.create({
-        data: {
-          tenantId: ctx.tenant.id,
-          examId,
-          studentId,
-          status: "ELIGIBLE",
+    if (!exam) return { ok: false, error: "Examination not found." };
+
+    let eligibleStudentIds: string[] = [];
+
+    if (exam.targetType === "CLASS_SECTION") {
+      if (exam.sectionId) {
+        const students = await tx.student.findMany({
+          where: { tenantId: ctx.tenant.id, sectionId: exam.sectionId, status: "ACTIVE" },
+          select: { id: true },
+        });
+        eligibleStudentIds = students.map((s) => s.id);
+      } else if (exam.classId) {
+        const students = await tx.student.findMany({
+          where: { tenantId: ctx.tenant.id, classId: exam.classId, status: "ACTIVE" },
+          select: { id: true },
+        });
+        eligibleStudentIds = students.map((s) => s.id);
+      }
+    } else if (exam.targetType === "BATCH" && exam.batchId) {
+      const enrollments = await tx.batchStudent.findMany({
+        where: { batchId: exam.batchId, status: "ACTIVE" },
+        select: { studentId: true },
+      });
+      eligibleStudentIds = enrollments.map((e) => e.studentId);
+    }
+
+    if (eligibleStudentIds.length === 0) {
+      return { ok: false, error: "No active eligible students found for this examination target." };
+    }
+
+    // Create enrollments skipping existing
+    let createdCount = 0;
+    for (const studentId of eligibleStudentIds) {
+      const existing = await tx.examEnrollment.findUnique({
+        where: {
+          examId_studentId: { examId, studentId },
         },
       });
-      createdCount++;
+      if (!existing) {
+        await tx.examEnrollment.create({
+          data: {
+            tenantId: ctx.tenant.id,
+            examId,
+            studentId,
+            status: "ELIGIBLE",
+          },
+        });
+        createdCount++;
+      }
     }
-  }
 
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "exam.auto_enrolled_students",
-    entity: "Examination",
-    entityId: exam.id,
-    meta: { createdCount, totalEligible: eligibleStudentIds.length },
+    await writeAudit(
+      {
+        tenantId: ctx.tenant.id,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        action: "exam.auto_enrolled_students",
+        entity: "Examination",
+        entityId: examId,
+        meta: { createdCount, totalEligible: eligibleStudentIds.length },
+      },
+      tx
+    );
+
+    revalidatePath(`/app/exams/${examId}`);
+    return { ok: true, data: { enrolledCount: createdCount } };
   });
-
-  revalidatePath(`/app/exams/${examId}`);
-  return { ok: true, data: { enrolledCount: createdCount } };
 }
 
 export async function enrollStudentsAction(input: unknown): Promise<ActionResult<{ enrolledCount: number }>> {
@@ -405,80 +639,99 @@ export async function enrollStudentsAction(input: unknown): Promise<ActionResult
   }
 
   const { examId, studentIds } = parsed.data;
-  const exam = await db.examination.findFirst({
-    where: { id: examId, tenantId: ctx.tenant.id },
-    include: { batch: true, class: true, section: true },
-  });
-  if (!exam) return { ok: false, error: "Examination not found." };
-  if (exam.isPublished) return { ok: false, error: "Cannot enroll students in a published exam." };
 
-  // Phase 2 & 3: Validate candidate eligibility against target academic unit
-  if (exam.targetType === "BATCH" && exam.batchId) {
-    const activeBatchStudents = await db.batchStudent.findMany({
-      where: { batchId: exam.batchId, studentId: { in: studentIds }, status: "ACTIVE" },
-      select: { studentId: true },
-    });
-    const activeSet = new Set(activeBatchStudents.map((b) => b.studentId));
-    const invalidStudents = studentIds.filter((id) => !activeSet.has(id));
-    if (invalidStudents.length > 0) {
-      return {
-        ok: false,
-        error: `One or more selected students are not active members of batch '${exam.batch?.name}'.`,
-      };
-    }
-  } else if (exam.targetType === "CLASS_SECTION" && exam.classId) {
-    const classStudents = await db.student.findMany({
-      where: {
-        id: { in: studentIds },
-        tenantId: ctx.tenant.id,
-        classId: exam.classId,
-        ...(exam.sectionId ? { sectionId: exam.sectionId } : {}),
-        status: "ACTIVE",
-      },
-      select: { id: true },
-    });
-    const validSet = new Set(classStudents.map((s) => s.id));
-    const invalid = studentIds.filter((id) => !validSet.has(id));
-    if (invalid.length > 0) {
-      return {
-        ok: false,
-        error: "One or more selected students do not belong to the targeted class or section.",
-      };
-    }
-  }
+  return await db.$transaction(async (tx) => {
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, examId, ctx.tenant.id);
+    if (!lockedExam) return { ok: false, error: "Examination not found." };
 
-  let createdCount = 0;
-  for (const studentId of studentIds) {
-    const existing = await db.examEnrollment.findUnique({
-      where: {
-        examId_studentId: { examId, studentId },
-      },
+    if (lockedExam.status === "ARCHIVED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot enroll students in an archived examination." };
+    }
+    if (lockedExam.isPublished || lockedExam.status === "PUBLISHED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot enroll students in a published exam." };
+    }
+    if (lockedExam.status === "EVALUATED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot enroll students in an evaluated examination. Reopen evaluation first." };
+    }
+
+    const exam = await tx.examination.findFirst({
+      where: { id: examId, tenantId: ctx.tenant.id },
+      include: { batch: true, class: true, section: true },
     });
-    if (!existing) {
-      await db.examEnrollment.create({
-        data: {
+    if (!exam) return { ok: false, error: "Examination not found." };
+
+    // Phase 2 & 3: Validate candidate eligibility against target academic unit
+    if (exam.targetType === "BATCH" && exam.batchId) {
+      const activeBatchStudents = await tx.batchStudent.findMany({
+        where: { batchId: exam.batchId, studentId: { in: studentIds }, status: "ACTIVE" },
+        select: { studentId: true },
+      });
+      const activeSet = new Set(activeBatchStudents.map((b) => b.studentId));
+      const invalidStudents = studentIds.filter((id) => !activeSet.has(id));
+      if (invalidStudents.length > 0) {
+        return {
+          ok: false,
+          error: `One or more selected students are not active members of batch '${exam.batch?.name}'.`,
+        };
+      }
+    } else if (exam.targetType === "CLASS_SECTION" && exam.classId) {
+      const classStudents = await tx.student.findMany({
+        where: {
+          id: { in: studentIds },
           tenantId: ctx.tenant.id,
-          examId,
-          studentId,
-          status: "ELIGIBLE",
+          classId: exam.classId,
+          ...(exam.sectionId ? { sectionId: exam.sectionId } : {}),
+          status: "ACTIVE",
+        },
+        select: { id: true },
+      });
+      const validSet = new Set(classStudents.map((s) => s.id));
+      const invalid = studentIds.filter((id) => !validSet.has(id));
+      if (invalid.length > 0) {
+        return {
+          ok: false,
+          error: "One or more selected students do not belong to the targeted class or section.",
+        };
+      }
+    }
+
+    let createdCount = 0;
+    for (const studentId of studentIds) {
+      const existing = await tx.examEnrollment.findUnique({
+        where: {
+          examId_studentId: { examId, studentId },
         },
       });
-      createdCount++;
+      if (!existing) {
+        await tx.examEnrollment.create({
+          data: {
+            tenantId: ctx.tenant.id,
+            examId,
+            studentId,
+            status: "ELIGIBLE",
+          },
+        });
+        createdCount++;
+      }
     }
-  }
 
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "exam.students_enrolled",
-    entity: "Examination",
-    entityId: exam.id,
-    meta: { enrolledCount: createdCount },
+    await writeAudit(
+      {
+        tenantId: ctx.tenant.id,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        action: "exam.students_enrolled",
+        entity: "Examination",
+        entityId: exam.id,
+        meta: { enrolledCount: createdCount },
+      },
+      tx
+    );
+
+    revalidatePath(`/app/exams/${examId}`);
+    return { ok: true, data: { enrolledCount: createdCount } };
   });
-
-  revalidatePath(`/app/exams/${examId}`);
-  return { ok: true, data: { enrolledCount: createdCount } };
 }
 
 export async function updateEnrollmentStatusAction(input: unknown): Promise<ActionResult> {
@@ -492,23 +745,51 @@ export async function updateEnrollmentStatusAction(input: unknown): Promise<Acti
   }
 
   const { enrollmentId, status, remarks } = parsed.data;
-  const enrollment = await db.examEnrollment.findFirst({
-    where: { id: enrollmentId, tenantId: ctx.tenant.id },
-    include: { exam: true },
-  });
-  if (!enrollment) return { ok: false, error: "Enrollment not found." };
-  if (enrollment.exam.isPublished) return { ok: false, error: "Cannot modify enrollment of a published exam." };
 
-  await db.examEnrollment.update({
-    where: { id: enrollment.id },
-    data: {
-      status: status as ExamEnrollmentStatus,
-      remarks,
-    },
-  });
+  return await db.$transaction(async (tx) => {
+    const enrollment = await tx.examEnrollment.findFirst({
+      where: { id: enrollmentId, tenantId: ctx.tenant.id },
+    });
+    if (!enrollment) return { ok: false, error: "Enrollment not found." };
 
-  revalidatePath(`/app/exams/${enrollment.examId}`);
-  return { ok: true };
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, enrollment.examId, ctx.tenant.id);
+    if (!lockedExam) return { ok: false, error: "Examination not found." };
+
+    if (lockedExam.status === "ARCHIVED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify enrollment of an archived examination." };
+    }
+    if (lockedExam.isPublished || lockedExam.status === "PUBLISHED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify enrollment of a published exam." };
+    }
+    if (lockedExam.status === "EVALUATED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify enrollment of an evaluated examination. Reopen evaluation first." };
+    }
+
+    await tx.examEnrollment.update({
+      where: { id: enrollment.id },
+      data: {
+        status: status as ExamEnrollmentStatus,
+        remarks,
+      },
+    });
+
+    await writeAudit(
+      {
+        tenantId: ctx.tenant.id,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        action: "exam.enrollment_updated",
+        entity: "ExamEnrollment",
+        entityId: enrollment.id,
+        meta: { examId: enrollment.examId, newStatus: status, remarks },
+      },
+      tx
+    );
+
+    revalidatePath(`/app/exams/${enrollment.examId}`);
+    return { ok: true };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -527,77 +808,97 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
 
   const { examId, examSubjectId, entries, reason, submitForVerification } = parsed.data;
 
-  const [exam, examSubject] = await Promise.all([
-    db.examination.findFirst({
-      where: { id: examId, tenantId: ctx.tenant.id },
-    }),
-    db.examSubject.findFirst({
-      where: { id: examSubjectId, examId, tenantId: ctx.tenant.id },
-      include: { subject: true },
-    }),
-  ]);
+  return await db.$transaction(async (tx) => {
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, examId, ctx.tenant.id);
+    if (!lockedExam) return { ok: false, error: "Examination not found." };
 
-  if (!exam) return { ok: false, error: "Examination not found." };
-  if (!examSubject) return { ok: false, error: "Subject assessment not found for this examination." };
-  if (exam.status === "ARCHIVED") {
-    return { ok: false, error: "Cannot modify marks for an archived examination." };
-  }
-  if (exam.isPublished || exam.status === "PUBLISHED") {
-    return {
-      ok: false,
-      error: "Cannot modify marks for a published examination. Use the authorized mark correction workflow.",
-    };
-  }
+    if (lockedExam.status === "ARCHIVED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify marks for an archived examination." };
+    }
+    if (lockedExam.isPublished || lockedExam.status === "PUBLISHED") {
+      return {
+        ok: false,
+        code: "INVALID_TRANSITION",
+        error: "Cannot modify marks for a published examination. Use the authorized mark correction workflow.",
+      };
+    }
+    if (lockedExam.status === "EVALUATED") {
+      return {
+        ok: false,
+        code: "INVALID_TRANSITION",
+        error: "Cannot enter or modify marks for an evaluated examination. Reopen evaluation first.",
+      };
+    }
 
-  const membership = await db.membership.findFirst({
-    where: { userId: ctx.user.id, tenantId: ctx.tenant.id },
-  });
-  const membershipId = membership?.id || null;
+    const [exam, examSubject] = await Promise.all([
+      tx.examination.findUnique({
+        where: { id: examId },
+      }),
+      tx.examSubject.findFirst({
+        where: { id: examSubjectId, examId, tenantId: ctx.tenant.id },
+        include: { subject: true },
+      }),
+    ]);
 
-  // Phase 12: Teacher Subject Assignment Authorization Check
-  if (ctx.membership?.roleKey === "TEACHER" && membership) {
-    let isAssigned = false;
-    if (exam.targetType === "BATCH" && exam.batchId) {
-      const bt = await db.batchTeacher.findUnique({
-        where: { batchId_teacherId: { batchId: exam.batchId, teacherId: membership.id } },
-      });
-      if (bt || examSubject.subject.teacherId === membership.id) {
-        isAssigned = true;
+    if (!exam) return { ok: false, error: "Examination not found." };
+    if (!examSubject) return { ok: false, error: "Subject assessment not found for this examination." };
+
+    const membership = await tx.membership.findFirst({
+      where: { userId: ctx.user.id, tenantId: ctx.tenant.id },
+    });
+    const membershipId = membership?.id || null;
+
+    // Teacher Subject Assignment Authorization Check
+    if (ctx.membership?.roleKey === "TEACHER" && membership) {
+      let isAssigned = false;
+      if (exam.targetType === "BATCH" && exam.batchId) {
+        const bt = await tx.batchTeacher.findUnique({
+          where: { batchId_teacherId: { batchId: exam.batchId, teacherId: membership.id } },
+        });
+        if (bt || examSubject.subject.teacherId === membership.id) {
+          isAssigned = true;
+        }
+      } else if (exam.targetType === "CLASS_SECTION") {
+        if (examSubject.subject.teacherId === membership.id) {
+          isAssigned = true;
+        }
       }
-    } else if (exam.targetType === "CLASS_SECTION") {
-      if (examSubject.subject.teacherId === membership.id) {
-        isAssigned = true;
+      if (!isAssigned) {
+        return { ok: false, error: "Access denied: You are not assigned to evaluate this subject assessment." };
       }
     }
-    if (!isAssigned) {
-      return { ok: false, error: "Access denied: You are not assigned to evaluate this subject assessment." };
-    }
-  }
 
-  // Validate maximum marks constraint
-  for (const entry of entries) {
-    if (entry.marksObtained !== null && entry.marksObtained !== undefined) {
-      if (entry.marksObtained > examSubject.maxMarks) {
-        return {
-          ok: false,
-          error: `Marks obtained (${entry.marksObtained}) exceeds maximum marks (${examSubject.maxMarks}) for ${examSubject.subject.name}.`,
-        };
+    // Validate maximum marks constraint
+    for (const entry of entries) {
+      if (entry.marksObtained !== null && entry.marksObtained !== undefined) {
+        if (entry.marksObtained > examSubject.maxMarks) {
+          return {
+            ok: false,
+            error: `Marks obtained (${entry.marksObtained}) exceeds maximum marks (${examSubject.maxMarks}) for ${examSubject.subject.name}.`,
+          };
+        }
       }
     }
-  }
 
-  const targetStatus: ExamEvaluationStatus = submitForVerification ? "SUBMITTED" : "DRAFT";
+    // Advance exam status to IN_PROGRESS if SCHEDULED or DRAFT
+    if (lockedExam.status === "SCHEDULED" || lockedExam.status === "DRAFT") {
+      const transRes = await transitionExamStatus(tx, examId, ctx, "IN_PROGRESS");
+      if (!transRes.ok) {
+        return { ok: false, code: transRes.code, error: transRes.error };
+      }
+    }
 
-  let updatedCount = 0;
+    const targetStatus: ExamEvaluationStatus = submitForVerification ? "SUBMITTED" : "DRAFT";
+    let updatedCount = 0;
 
-  await db.$transaction(async (tx) => {
     for (const entry of entries) {
       // Find enrollment
       const enrollment = await tx.examEnrollment.findUnique({
         where: { examId_studentId: { examId, studentId: entry.studentId } },
       });
 
-      if (!enrollment) continue;
+      if (!enrollment || enrollment.status === "WITHDRAWN") continue;
 
       const existingMark = await tx.examMark.findUnique({
         where: {
@@ -701,27 +1002,22 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
       }
     }
 
-    // Advance exam status to IN_PROGRESS if SCHEDULED
-    if (exam.status === "SCHEDULED" || exam.status === "DRAFT") {
-      await tx.examination.update({
-        where: { id: exam.id },
-        data: { status: "IN_PROGRESS" },
-      });
-    }
-  });
+    await writeAudit(
+      {
+        tenantId: ctx.tenant.id,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        action: "exam.marks_entered",
+        entity: "ExamSubject",
+        entityId: examSubjectId,
+        meta: { updatedCount, submitForVerification, reason },
+      },
+      tx
+    );
 
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "exam.marks_entered",
-    entity: "ExamSubject",
-    entityId: examSubjectId,
-    meta: { updatedCount, submitForVerification, reason },
+    revalidatePath(`/app/exams/${examId}`);
+    return { ok: true, data: { updatedCount } };
   });
-
-  revalidatePath(`/app/exams/${examId}`);
-  return { ok: true, data: { updatedCount } };
 }
 
 export async function verifyExamSubjectMarksAction(examId: string, examSubjectId: string): Promise<ActionResult> {
@@ -729,26 +1025,28 @@ export async function verifyExamSubjectMarksAction(examId: string, examSubjectId
   if (!auth.ok) return { ok: false, error: auth.error };
   const ctx = auth.ctx;
 
-  const [exam, examSubject] = await Promise.all([
-    db.examination.findFirst({
-      where: { id: examId, tenantId: ctx.tenant.id },
-      include: { subjects: true },
-    }),
-    db.examSubject.findFirst({
+  return await db.$transaction(async (tx) => {
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, examId, ctx.tenant.id);
+    if (!lockedExam) return { ok: false, error: "Examination not found." };
+
+    if (lockedExam.status === "ARCHIVED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot verify marks for an archived examination." };
+    }
+    if (lockedExam.isPublished || lockedExam.status === "PUBLISHED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Examination is already published." };
+    }
+
+    const examSubject = await tx.examSubject.findFirst({
       where: { id: examSubjectId, examId, tenantId: ctx.tenant.id },
-    }),
-  ]);
+    });
+    if (!examSubject) return { ok: false, error: "Subject assessment not found." };
 
-  if (!exam) return { ok: false, error: "Examination not found." };
-  if (!examSubject) return { ok: false, error: "Subject assessment not found." };
-  if (exam.isPublished) return { ok: false, error: "Examination is already published." };
+    const membership = await tx.membership.findFirst({
+      where: { userId: ctx.user.id, tenantId: ctx.tenant.id },
+    });
+    const membershipId = membership?.id || null;
 
-  const membership = await db.membership.findFirst({
-    where: { userId: ctx.user.id, tenantId: ctx.tenant.id },
-  });
-  const membershipId = membership?.id || null;
-
-  await db.$transaction(async (tx) => {
     // Lock all marks for this subject to VERIFIED
     await tx.examMark.updateMany({
       where: { examSubjectId, tenantId: ctx.tenant.id },
@@ -759,33 +1057,33 @@ export async function verifyExamSubjectMarksAction(examId: string, examSubjectId
       },
     });
 
-    // Check if ALL subjects of this exam are now verified
-    const allMarks = await tx.examMark.findMany({
-      where: { examId, tenantId: ctx.tenant.id },
-      select: { evaluationStatus: true },
-    });
-
-    const hasUnverified = allMarks.some((m) => m.evaluationStatus !== "VERIFIED");
-    if (!hasUnverified && allMarks.length > 0) {
-      await tx.examination.update({
-        where: { id: exam.id },
-        data: { status: "EVALUATED" },
+    // Check candidate-subject Cartesian completeness across the whole exam
+    const completeness = await verifyCandidateSubjectCompleteness(tx, examId, ctx.tenant.id);
+    if (completeness.isValid) {
+      const transRes = await transitionExamStatus(tx, examId, ctx, "EVALUATED", {
+        skipCompletenessCheck: true,
       });
+      if (!transRes.ok) {
+        return { ok: false, code: transRes.code, error: transRes.error };
+      }
     }
-  });
 
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "exam.marks_verified",
-    entity: "ExamSubject",
-    entityId: examSubjectId,
-    meta: { examId },
-  });
+    await writeAudit(
+      {
+        tenantId: ctx.tenant.id,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        action: "exam.marks_verified",
+        entity: "ExamSubject",
+        entityId: examSubjectId,
+        meta: { examId, evaluated: completeness.isValid },
+      },
+      tx
+    );
 
-  revalidatePath(`/app/exams/${examId}`);
-  return { ok: true };
+    revalidatePath(`/app/exams/${examId}`);
+    return { ok: true };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -804,206 +1102,220 @@ export async function calculateAndPublishResultsAction(input: unknown): Promise<
 
   const { examId } = parsed.data;
 
-  const exam = await db.examination.findFirst({
-    where: { id: examId, tenantId: ctx.tenant.id },
-    include: {
-      academicYear: true,
-      gradeScale: {
-        include: {
-          bands: {
-            orderBy: { minPercentage: "desc" },
-          },
-        },
-      },
-      subjects: {
-        include: { subject: true },
-        orderBy: { order: "asc" },
-      },
-      enrollments: {
-        include: {
-          student: true,
-          marks: {
-            include: { examSubject: true },
-          },
-        },
-      },
-    },
-  });
+  return await db.$transaction(async (tx) => {
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, examId, ctx.tenant.id);
+    if (!lockedExam) return { ok: false, error: "Examination not found." };
 
-  if (!exam) return { ok: false, error: "Examination not found." };
-  if (exam.subjects.length === 0) return { ok: false, error: "Cannot publish an examination with no subjects." };
-  if (exam.enrollments.length === 0) return { ok: false, error: "Cannot publish an examination with no enrolled students." };
-
-  // Phase 1 & 8: Verify that all candidate marks for all subjects have been verified
-  const unverifiedMarks = await db.examMark.findMany({
-    where: {
-      examId,
-      tenantId: ctx.tenant.id,
-      evaluationStatus: { not: "VERIFIED" },
-    },
-    select: { id: true },
-  });
-  if (unverifiedMarks.length > 0) {
-    return {
-      ok: false,
-      error: `Cannot publish results: ${unverifiedMarks.length} candidate mark entries have not been verified and locked.`,
-    };
-  }
-
-  // Calculate total maximum marks possible across all subjects
-  const totalMaxMarks = exam.subjects.reduce((sum, s) => sum + s.maxMarks * s.weightage, 0);
-
-  // Intermediate computation container for students
-  type StudentCalc = {
-    enrollmentId: string;
-    studentId: string;
-    studentName: string;
-    admissionNo: string;
-    rollNumber: string | null;
-    totalMarksObtained: number;
-    percentage: number;
-    passedSubjectsCount: number;
-    failedSubjectsCount: number;
-    resultStatus: ExamResultStatus;
-    grade: string;
-    gradePoint: number;
-    remarks: string | null;
-    subjectBreakdown: Array<{
-      subjectId: string;
-      subjectName: string;
-      subjectCode: string | null;
-      maxMarks: number;
-      passingMarks: number;
-      marksObtained: number | null;
-      isAbsent: boolean;
-      isExempted: boolean;
-      isPassed: boolean;
-    }>;
-  };
-
-  const studentCalcs: StudentCalc[] = [];
-
-  for (const enrollment of exam.enrollments) {
-    // Phase 4 & 8: Withdrawn candidates do not receive calculated published results
-    if (enrollment.status === "WITHDRAWN") {
-      continue;
+    if (lockedExam.status === "ARCHIVED") {
+      return { ok: false, code: "INVALID_TRANSITION", error: "Cannot publish an archived examination." };
+    }
+    if (lockedExam.status !== "EVALUATED" && lockedExam.status !== "PUBLISHED") {
+      return {
+        ok: false,
+        code: "INVALID_TRANSITION",
+        error: "Examination must be in EVALUATED status with all marks verified before publishing.",
+      };
     }
 
-    const isCandidateExempted = enrollment.status === "EXEMPTED";
-    const isCandidateAbsent =
-      enrollment.status === "ABSENT" ||
-      (enrollment.marks.length > 0 && enrollment.marks.every((m) => m.isAbsent));
+    // 2. Strict candidate-subject Cartesian completeness check
+    const completeness = await verifyCandidateSubjectCompleteness(tx, examId, ctx.tenant.id);
+    if (!completeness.isValid) {
+      return {
+        ok: false,
+        code: "INCOMPLETE_EVALUATION",
+        error: `Cannot publish examination: ${completeness.errors[0]}`,
+      };
+    }
 
-    let studentObtained = 0;
-    let passedSubjects = 0;
-    let failedSubjects = 0;
+    const exam = await tx.examination.findFirst({
+      where: { id: examId, tenantId: ctx.tenant.id },
+      include: {
+        academicYear: true,
+        gradeScale: {
+          include: {
+            bands: {
+              orderBy: { minPercentage: "desc" },
+            },
+          },
+        },
+        subjects: {
+          include: { subject: true },
+          orderBy: { order: "asc" },
+        },
+        enrollments: {
+          include: {
+            student: true,
+            marks: {
+              include: { examSubject: true },
+            },
+          },
+        },
+      },
+    });
 
-    const breakdown = exam.subjects.map((es) => {
-      const mark = enrollment.marks.find((m) => m.examSubjectId === es.id);
-      const marksObtained = mark?.marksObtained ?? null;
-      const isAbsent = isCandidateAbsent || (mark?.isAbsent ?? false);
-      const isExempted = isCandidateExempted || (mark?.isExempted ?? false);
+    if (!exam) return { ok: false, error: "Examination not found." };
+    if (exam.subjects.length === 0) return { ok: false, error: "Cannot publish an examination with no subjects." };
+    if (exam.enrollments.length === 0) return { ok: false, error: "Cannot publish an examination with no enrolled students." };
 
-      const numericMark = isAbsent || isExempted || marksObtained === null ? 0 : marksObtained;
-      studentObtained += numericMark * es.weightage;
+    // Intermediate computation container for students
+    type StudentCalc = {
+      enrollmentId: string;
+      studentId: string;
+      studentName: string;
+      admissionNo: string;
+      rollNumber: string | null;
+      totalMaxMarks: number;
+      totalMarksObtained: number;
+      percentage: number;
+      passedSubjectsCount: number;
+      failedSubjectsCount: number;
+      resultStatus: ExamResultStatus;
+      grade: string;
+      gradePoint: number;
+      remarks: string | null;
+      subjectBreakdown: Array<{
+        subjectId: string;
+        subjectName: string;
+        subjectCode: string | null;
+        maxMarks: number;
+        passingMarks: number;
+        marksObtained: number | null;
+        isAbsent: boolean;
+        isExempted: boolean;
+        isPassed: boolean;
+      }>;
+    };
 
-      const isPassed = !isAbsent && (isExempted || (marksObtained !== null && marksObtained >= es.passingMarks));
-      if (isPassed) {
-        passedSubjects++;
-      } else {
-        failedSubjects++;
+    const studentCalcs: StudentCalc[] = [];
+
+    for (const enrollment of exam.enrollments) {
+      // Withdrawn candidates do not receive calculated published results
+      if (enrollment.status === "WITHDRAWN") {
+        continue;
       }
 
+      const isCandidateExempted = enrollment.status === "EXEMPTED";
+      const isCandidateAbsent =
+        enrollment.status === "ABSENT" ||
+        (enrollment.marks.length > 0 && enrollment.marks.every((m) => m.isAbsent));
+
+      let studentObtained = 0;
+      let studentMaxMarks = 0;
+      let passedSubjects = 0;
+      let failedSubjects = 0;
+
+      const breakdown = exam.subjects.map((es) => {
+        const mark = enrollment.marks.find((m) => m.examSubjectId === es.id);
+        const marksObtained = mark?.marksObtained ?? null;
+        const isAbsent = isCandidateAbsent || (mark?.isAbsent ?? false);
+        const isExempted = isCandidateExempted || (mark?.isExempted ?? false);
+
+        const numericMark = isAbsent || isExempted || marksObtained === null ? 0 : marksObtained;
+        studentObtained += numericMark * es.weightage;
+
+        // Exempted marks cannot silently contribute to ordinary scored totals or denominators
+        if (!isExempted) {
+          studentMaxMarks += es.maxMarks * es.weightage;
+        }
+
+        const isPassed = !isAbsent && (isExempted || (marksObtained !== null && marksObtained >= es.passingMarks));
+        if (isPassed) {
+          passedSubjects++;
+        } else {
+          failedSubjects++;
+        }
+
+        return {
+          subjectId: es.subjectId,
+          subjectName: es.subject.name,
+          subjectCode: es.subject.code,
+          maxMarks: es.maxMarks,
+          passingMarks: es.passingMarks,
+          marksObtained,
+          isAbsent,
+          isExempted,
+          isPassed,
+        };
+      });
+
+      let percentage = 0;
+      let grade = "N/A";
+      let gradePoint = 0;
+      let resultStatus: ExamResultStatus = "PASS";
+      let remarks: string | null = null;
+
+      if (isCandidateExempted || studentMaxMarks === 0) {
+        resultStatus = "WITHHELD";
+        grade = "EXM";
+        remarks = "Candidate exempted from assessment";
+      } else if (isCandidateAbsent) {
+        resultStatus = "FAIL";
+        percentage = 0;
+        remarks = "Candidate absent in all assessments";
+        const lowestBand = exam.gradeScale.bands[exam.gradeScale.bands.length - 1];
+        if (lowestBand) {
+          grade = lowestBand.letterGrade;
+          gradePoint = lowestBand.gradePoint;
+        }
+      } else {
+        const rawPercentage = studentMaxMarks > 0 ? (studentObtained / studentMaxMarks) * 100 : 0;
+        percentage = Math.round((rawPercentage + Number.EPSILON) * 100) / 100;
+
+        let matchedBand = exam.gradeScale.bands.find(
+          (b) => percentage >= b.minPercentage && percentage <= b.maxPercentage
+        );
+        if (!matchedBand && exam.gradeScale.bands.length > 0) {
+          matchedBand =
+            percentage > 100
+              ? exam.gradeScale.bands[0]
+              : exam.gradeScale.bands[exam.gradeScale.bands.length - 1];
+        }
+
+        grade = matchedBand ? matchedBand.letterGrade : "N/A";
+        gradePoint = matchedBand ? matchedBand.gradePoint : 0;
+        resultStatus = failedSubjects === 0 ? "PASS" : "FAIL";
+      }
+
+      studentCalcs.push({
+        enrollmentId: enrollment.id,
+        studentId: enrollment.student.id,
+        studentName: `${enrollment.student.firstName} ${enrollment.student.lastName}`.trim(),
+        admissionNo: enrollment.student.admissionNo,
+        rollNumber: enrollment.rollNumber,
+        totalMaxMarks: studentMaxMarks,
+        totalMarksObtained: Math.round(studentObtained * 100) / 100,
+        percentage,
+        passedSubjectsCount: passedSubjects,
+        failedSubjectsCount: failedSubjects,
+        resultStatus,
+        grade,
+        gradePoint,
+        remarks,
+        subjectBreakdown: breakdown,
+      });
+    }
+
+    // Rank assignment: descending by totalMarksObtained
+    studentCalcs.sort((a, b) => b.totalMarksObtained - a.totalMarksObtained);
+
+    let currentRank = 1;
+    const rankedStudents = studentCalcs.map((sc, idx) => {
+      if (idx > 0 && sc.totalMarksObtained < studentCalcs[idx - 1].totalMarksObtained) {
+        currentRank = idx + 1;
+      }
       return {
-        subjectId: es.subjectId,
-        subjectName: es.subject.name,
-        subjectCode: es.subject.code,
-        maxMarks: es.maxMarks,
-        passingMarks: es.passingMarks,
-        marksObtained,
-        isAbsent,
-        isExempted,
-        isPassed,
+        ...sc,
+        rank: sc.resultStatus === "PASS" ? currentRank : null,
       };
     });
 
-    let percentage = 0;
-    let grade = "N/A";
-    let gradePoint = 0;
-    let resultStatus: ExamResultStatus = "PASS";
-    let remarks: string | null = null;
-
-    if (isCandidateExempted) {
-      resultStatus = "WITHHELD";
-      grade = "EXM";
-      remarks = "Candidate exempted from assessment";
-    } else if (isCandidateAbsent) {
-      resultStatus = "FAIL";
-      percentage = 0;
-      remarks = "Candidate absent in all assessments";
-      const lowestBand = exam.gradeScale.bands[exam.gradeScale.bands.length - 1];
-      if (lowestBand) {
-        grade = lowestBand.letterGrade;
-        gradePoint = lowestBand.gradePoint;
-      }
-    } else {
-      const rawPercentage = totalMaxMarks > 0 ? (studentObtained / totalMaxMarks) * 100 : 0;
-      percentage = Math.round((rawPercentage + Number.EPSILON) * 100) / 100;
-
-      let matchedBand = exam.gradeScale.bands.find(
-        (b) => percentage >= b.minPercentage && percentage <= b.maxPercentage
-      );
-      if (!matchedBand && exam.gradeScale.bands.length > 0) {
-        matchedBand =
-          percentage > 100
-            ? exam.gradeScale.bands[0]
-            : exam.gradeScale.bands[exam.gradeScale.bands.length - 1];
-      }
-
-      grade = matchedBand ? matchedBand.letterGrade : "N/A";
-      gradePoint = matchedBand ? matchedBand.gradePoint : 0;
-      resultStatus = failedSubjects === 0 ? "PASS" : "FAIL";
-    }
-
-    studentCalcs.push({
-      enrollmentId: enrollment.id,
-      studentId: enrollment.student.id,
-      studentName: `${enrollment.student.firstName} ${enrollment.student.lastName}`.trim(),
-      admissionNo: enrollment.student.admissionNo,
-      rollNumber: enrollment.rollNumber,
-      totalMarksObtained: Math.round(studentObtained * 100) / 100,
-      percentage,
-      passedSubjectsCount: passedSubjects,
-      failedSubjectsCount: failedSubjects,
-      resultStatus,
-      grade,
-      gradePoint,
-      remarks,
-      subjectBreakdown: breakdown,
+    const publishedAt = new Date();
+    const membership = await tx.membership.findFirst({
+      where: { userId: ctx.user.id, tenantId: ctx.tenant.id },
     });
-  }
+    const membershipId = membership?.id || null;
 
-  // Rank assignment: descending by totalMarksObtained
-  studentCalcs.sort((a, b) => b.totalMarksObtained - a.totalMarksObtained);
-
-  let currentRank = 1;
-  const rankedStudents = studentCalcs.map((sc, idx) => {
-    if (idx > 0 && sc.totalMarksObtained < studentCalcs[idx - 1].totalMarksObtained) {
-      currentRank = idx + 1;
-    }
-    return {
-      ...sc,
-      rank: sc.resultStatus === "PASS" ? currentRank : null,
-    };
-  });
-
-  const publishedAt = new Date();
-  const membership = await db.membership.findFirst({
-    where: { userId: ctx.user.id, tenantId: ctx.tenant.id },
-  });
-  const membershipId = membership?.id || null;
-
-  await db.$transaction(async (tx) => {
     for (const student of rankedStudents) {
       // Upsert ExamResult
       const result = await tx.examResult.upsert({
@@ -1018,7 +1330,7 @@ export async function calculateAndPublishResultsAction(input: unknown): Promise<
           examId,
           studentId: student.studentId,
           enrollmentId: student.enrollmentId,
-          totalMaxMarks,
+          totalMaxMarks: student.totalMaxMarks,
           totalMarksObtained: student.totalMarksObtained,
           percentage: student.percentage,
           grade: student.grade,
@@ -1033,7 +1345,7 @@ export async function calculateAndPublishResultsAction(input: unknown): Promise<
           publishedById: membershipId,
         },
         update: {
-          totalMaxMarks,
+          totalMaxMarks: student.totalMaxMarks,
           totalMarksObtained: student.totalMarksObtained,
           percentage: student.percentage,
           grade: student.grade,
@@ -1069,7 +1381,7 @@ export async function calculateAndPublishResultsAction(input: unknown): Promise<
           rollNumber: student.rollNumber,
         },
         performance: {
-          totalMaxMarks,
+          totalMaxMarks: student.totalMaxMarks,
           totalMarksObtained: student.totalMarksObtained,
           percentage: student.percentage,
           grade: student.grade,
@@ -1114,30 +1426,31 @@ export async function calculateAndPublishResultsAction(input: unknown): Promise<
       }
     }
 
-    // Mark Examination as Published
-    await tx.examination.update({
-      where: { id: exam.id },
-      data: {
-        status: "PUBLISHED",
-        isPublished: true,
-        publishedAt,
-      },
+    // Advance exam status to PUBLISHED via transition engine
+    const transRes = await transitionExamStatus(tx, examId, ctx, "PUBLISHED", {
+      skipCompletenessCheck: true,
     });
-  });
+    if (!transRes.ok) {
+      return { ok: false, code: transRes.code, error: transRes.error };
+    }
 
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "exam.results_published",
-    entity: "Examination",
-    entityId: exam.id,
-    meta: { studentCount: rankedStudents.length, publishedAt: publishedAt.toISOString() },
-  });
+    await writeAudit(
+      {
+        tenantId: ctx.tenant.id,
+        actorId: ctx.user.id,
+        actorName: ctx.user.name,
+        action: "exam.results_published",
+        entity: "Examination",
+        entityId: exam.id,
+        meta: { studentCount: rankedStudents.length, publishedAt: publishedAt.toISOString() },
+      },
+      tx
+    );
 
-  revalidatePath(`/app/exams/${examId}`);
-  revalidatePath("/app/exams");
-  return { ok: true, data: { publishedCount: rankedStudents.length } };
+    revalidatePath(`/app/exams/${examId}`);
+    revalidatePath("/app/exams");
+    return { ok: true, data: { publishedCount: rankedStudents.length } };
+  });
 }
 
 export async function correctPublishedMarkAction(
@@ -1181,6 +1494,9 @@ export async function correctPublishedMarkAction(
   });
 
   if (!exam) return { ok: false, error: "Examination not found." };
+  if (exam.status === "ARCHIVED") {
+    return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify marks for an archived examination." };
+  }
   if (!exam.isPublished) return { ok: false, error: "Examination is not published yet. Use regular marks entry." };
 
   const targetSubject = exam.subjects.find((s) => s.id === examSubjectId);
@@ -1282,8 +1598,6 @@ export async function correctPublishedMarkAction(
       });
 
       // 5. Recalculate all students' results and ranks with latest marks from tx
-      const totalMaxMarks = exam.subjects.reduce((sum, s) => sum + s.maxMarks * s.weightage, 0);
-
       const allMarks = await tx.examMark.findMany({
         where: { examId, tenantId: ctx.tenant.id },
       });
@@ -1294,6 +1608,7 @@ export async function correctPublishedMarkAction(
         studentName: string;
         admissionNo: string;
         rollNumber: string | null;
+        totalMaxMarks: number;
         totalMarksObtained: number;
         percentage: number;
         passedSubjectsCount: number;
@@ -1327,6 +1642,7 @@ export async function correctPublishedMarkAction(
           (studentMarks.length > 0 && studentMarks.every((m) => m.isAbsent));
 
         let studentObtained = 0;
+        let studentMaxMarks = 0;
         let passedSubjects = 0;
         let failedSubjects = 0;
 
@@ -1338,6 +1654,11 @@ export async function correctPublishedMarkAction(
 
           const numericMark = isAbsent || isExempted || marksObtained === null ? 0 : marksObtained;
           studentObtained += numericMark * es.weightage;
+
+          // Exempted marks cannot silently contribute to ordinary scored totals or denominators
+          if (!isExempted) {
+            studentMaxMarks += es.maxMarks * es.weightage;
+          }
 
           const isPassed = !isAbsent && (isExempted || (marksObtained !== null && marksObtained >= es.passingMarks));
           if (isPassed) {
@@ -1365,7 +1686,7 @@ export async function correctPublishedMarkAction(
         let resultStatus: ExamResultStatus = "PASS";
         let remarks: string | null = null;
 
-        if (isCandidateExempted) {
+        if (isCandidateExempted || studentMaxMarks === 0) {
           resultStatus = "WITHHELD";
           grade = "EXM";
           remarks = "Candidate exempted from assessment";
@@ -1379,7 +1700,7 @@ export async function correctPublishedMarkAction(
             gradePoint = lowestBand.gradePoint;
           }
         } else {
-          const rawPercentage = totalMaxMarks > 0 ? (studentObtained / totalMaxMarks) * 100 : 0;
+          const rawPercentage = studentMaxMarks > 0 ? (studentObtained / studentMaxMarks) * 100 : 0;
           percentage = Math.round((rawPercentage + Number.EPSILON) * 100) / 100;
 
           let matchedBand = exam.gradeScale.bands.find(
@@ -1403,6 +1724,7 @@ export async function correctPublishedMarkAction(
           studentName: `${enrollment.student.firstName} ${enrollment.student.lastName}`.trim(),
           admissionNo: enrollment.student.admissionNo,
           rollNumber: enrollment.rollNumber,
+          totalMaxMarks: studentMaxMarks,
           totalMarksObtained: Math.round(studentObtained * 100) / 100,
           percentage,
           passedSubjectsCount: passedSubjects,
@@ -1443,7 +1765,7 @@ export async function correctPublishedMarkAction(
             examId,
             studentId: student.studentId,
             enrollmentId: student.enrollmentId,
-            totalMaxMarks,
+            totalMaxMarks: student.totalMaxMarks,
             totalMarksObtained: student.totalMarksObtained,
             percentage: student.percentage,
             grade: student.grade,
@@ -1458,7 +1780,7 @@ export async function correctPublishedMarkAction(
             publishedById: membershipId,
           },
           update: {
-            totalMaxMarks,
+            totalMaxMarks: student.totalMaxMarks,
             totalMarksObtained: student.totalMarksObtained,
             percentage: student.percentage,
             grade: student.grade,
@@ -1493,7 +1815,7 @@ export async function correctPublishedMarkAction(
             rollNumber: student.rollNumber,
           },
           performance: {
-            totalMaxMarks,
+            totalMaxMarks: student.totalMaxMarks,
             totalMarksObtained: student.totalMarksObtained,
             percentage: student.percentage,
             grade: student.grade,

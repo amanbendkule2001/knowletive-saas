@@ -31,6 +31,9 @@ import {
   ExportResultsCsvButton,
   CorrectPublishedMarkModal,
   CandidateSubjectMark,
+  CancelExamModal,
+  ArchiveExamModal,
+  ReopenEvaluatedExamModal,
 } from "@/components/exams/exam-client-bits";
 import type { ExamStatus } from "@prisma/client";
 
@@ -42,6 +45,8 @@ function examStatusTone(status: ExamStatus): Tone {
       return "info";
     case "IN_PROGRESS":
       return "brand";
+    case "COMPLETED":
+      return "info";
     case "SCHEDULED":
       return "warning";
     case "DRAFT":
@@ -70,6 +75,7 @@ export default async function ExamStudioPage({
   const canVerifyMarks = hasTenantPermission(ctx, "tenant.exams.verify_marks");
   const canPublish = hasTenantPermission(ctx, "tenant.exams.publish_results");
   const canCorrectMarks = hasTenantPermission(ctx, "tenant.exams.correct_published_marks");
+  const canManageGrading = hasTenantPermission(ctx, "tenant.exams.manage_grading");
 
   const [exam, availableSubjects] = await Promise.all([
     db.examination.findFirst({
@@ -176,7 +182,7 @@ export default async function ExamStudioPage({
         </div>
 
         <div className="flex items-center gap-2">
-          {canWrite && !exam.isPublished && (
+          {canWrite && exam.status !== "ARCHIVED" && !exam.isPublished && exam.status !== "EVALUATED" && (
             <ConfigureSubjectsModal
               examId={exam.id}
               availableSubjects={availableSubjects}
@@ -194,11 +200,15 @@ export default async function ExamStudioPage({
             />
           )}
 
-          {!exam.isPublished && (
+          {canWrite && exam.status !== "ARCHIVED" && !exam.isPublished && exam.status !== "EVALUATED" && (
             <AutoEnrollStudentsButton examId={exam.id} targetLabel={targetLabel} />
           )}
 
-          {canPublish && !exam.isPublished && exam.enrollments.length > 0 && exam.subjects.length > 0 && (
+          {canManageGrading && exam.status === "EVALUATED" && (
+            <ReopenEvaluatedExamModal examId={exam.id} examTitle={exam.title} />
+          )}
+
+          {canPublish && (exam.status === "EVALUATED" || (!exam.isPublished && exam.enrollments.length > 0 && exam.subjects.length > 0)) && (
             <PublishResultsModal
               examId={exam.id}
               examTitle={exam.title}
@@ -208,7 +218,15 @@ export default async function ExamStudioPage({
             />
           )}
 
-          {canWrite && !exam.isPublished && (
+          {canWrite && exam.status !== "ARCHIVED" && !exam.isPublished && (
+            <CancelExamModal examId={exam.id} examTitle={exam.title} currentStatus={exam.status} />
+          )}
+
+          {canWrite && exam.status === "PUBLISHED" && (
+            <ArchiveExamModal examId={exam.id} examTitle={exam.title} />
+          )}
+
+          {canWrite && exam.status === "DRAFT" && exam.enrollments.length === 0 && exam.subjects.length === 0 && (
             <DeleteExamButton examId={exam.id} examTitle={exam.title} />
           )}
         </div>

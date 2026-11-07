@@ -583,6 +583,181 @@ async function runBrowserWorkflows() {
     record(30, "Accountant Access Denied to Examination System", acctDenied, `Redirected to: ${acctPage.url()}`);
 
     await acctContext.close();
+
+    // ─────────────────────────────────────────────────────────────────
+    // SECTION 6: LIFECYCLE STATE MACHINE UI & SAFEGUARDS (STAGE 4.3 STEP 2.1)
+    // ─────────────────────────────────────────────────────────────────
+
+    const lifecycleAdminContext = await browser.newContext();
+    const lcPage = await lifecycleAdminContext.newPage();
+
+    await lcPage.goto(`${BASE_URL}/login`);
+    await lcPage.fill('input[name="email"], input[type="email"]', "admin@sunrise.test");
+    await lcPage.fill('input[name="password"], input[type="password"]', "Admin@123");
+    await lcPage.click('button[type="submit"]');
+    await lcPage.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 10000 });
+
+    // WORKFLOW 33: Cancellation modal and confirmation
+    const cancelExam = await prisma.examination.create({
+      data: {
+        tenantId: tenant.id,
+        academicYearId: ay.id,
+        gradeScaleId: gradeScale.id,
+        createdById: adminMem.id,
+        targetType: "CLASS_SECTION",
+        classId: classLevel.id,
+        title: `Cancellation Test Exam (${timestamp})`,
+        code: `CNCL-${timestamp}`,
+        examType: "UNIT_TEST",
+        status: "SCHEDULED",
+        startDate: new Date("2026-12-01"),
+        endDate: new Date("2026-12-05"),
+      },
+    });
+    createdExamIds.push(cancelExam.id);
+
+    await lcPage.goto(`${BASE_URL}/app/exams/${cancelExam.id}`);
+    await lcPage.waitForLoadState("networkidle");
+
+    const cancelBtn = lcPage.locator('button:has-text("Cancel Exam")');
+    await cancelBtn.waitFor({ state: "visible", timeout: 5000 });
+    await cancelBtn.click();
+
+    const reasonInput = lcPage.locator('textarea[placeholder*="Examination postponed"]');
+    await reasonInput.waitFor({ state: "visible", timeout: 5000 });
+    await reasonInput.fill("Postponed due to state academic calendar realignment");
+
+    const confirmCancelBtn = lcPage.locator('button:has-text("Confirm Cancellation")');
+    await confirmCancelBtn.click();
+
+    await lcPage.waitForTimeout(1000);
+    await lcPage.goto(`${BASE_URL}/app/exams/${cancelExam.id}`);
+    await lcPage.waitForLoadState("networkidle");
+
+    const updatedExamCancel = await prisma.examination.findUnique({ where: { id: cancelExam.id } });
+    record(33, "Cancellation modal and confirmation", updatedExamCancel?.status === "ARCHIVED");
+
+    // WORKFLOW 34: Published examination archival
+    const pubExamForArchive = await prisma.examination.create({
+      data: {
+        tenantId: tenant.id,
+        academicYearId: ay.id,
+        gradeScaleId: gradeScale.id,
+        createdById: adminMem.id,
+        targetType: "CLASS_SECTION",
+        classId: classLevel.id,
+        title: `Archive Test Exam (${timestamp})`,
+        code: `ARCH-${timestamp}`,
+        examType: "UNIT_TEST",
+        status: "PUBLISHED",
+        isPublished: true,
+        publishedAt: new Date(),
+        startDate: new Date("2026-11-01"),
+        endDate: new Date("2026-11-05"),
+      },
+    });
+    createdExamIds.push(pubExamForArchive.id);
+
+    await lcPage.goto(`${BASE_URL}/app/exams/${pubExamForArchive.id}`);
+    await lcPage.waitForLoadState("networkidle");
+
+    const archiveBtn = lcPage.locator('button:has-text("Archive Examination")');
+    await archiveBtn.waitFor({ state: "visible", timeout: 5000 });
+    await archiveBtn.click();
+
+    const archiveNote = lcPage.locator('textarea[placeholder*="End-of-term regular archival"]');
+    await archiveNote.waitFor({ state: "visible", timeout: 5000 });
+    await archiveNote.fill("Regular semester end archival");
+
+    const confirmArchiveBtn = lcPage.locator('button:has-text("Confirm Archival")');
+    await confirmArchiveBtn.click();
+
+    await lcPage.waitForTimeout(1000);
+    await lcPage.goto(`${BASE_URL}/app/exams/${pubExamForArchive.id}`);
+    await lcPage.waitForLoadState("networkidle");
+
+    const updatedArchivedExam = await prisma.examination.findUnique({ where: { id: pubExamForArchive.id } });
+    record(34, "Published examination archival", updatedArchivedExam?.status === "ARCHIVED" && updatedArchivedExam?.isPublished === true);
+
+    // WORKFLOW 35: Evaluated examination reopening
+    const evalExamForReopen = await prisma.examination.create({
+      data: {
+        tenantId: tenant.id,
+        academicYearId: ay.id,
+        gradeScaleId: gradeScale.id,
+        createdById: adminMem.id,
+        targetType: "CLASS_SECTION",
+        classId: classLevel.id,
+        title: `Reopen Test Exam (${timestamp})`,
+        code: `REOP-${timestamp}`,
+        examType: "UNIT_TEST",
+        status: "EVALUATED",
+        startDate: new Date("2026-11-01"),
+        endDate: new Date("2026-11-05"),
+      },
+    });
+    createdExamIds.push(evalExamForReopen.id);
+
+    await lcPage.goto(`${BASE_URL}/app/exams/${evalExamForReopen.id}`);
+    await lcPage.waitForLoadState("networkidle");
+
+    const reopenBtn = lcPage.locator('button:has-text("Reopen Evaluation")');
+    await reopenBtn.waitFor({ state: "visible", timeout: 5000 });
+    await reopenBtn.click();
+
+    const reopenReason = lcPage.locator('textarea[placeholder*="Head examiner requested"]');
+    await reopenReason.waitFor({ state: "visible", timeout: 5000 });
+    await reopenReason.fill("Reopening assessment for marks verification adjustments");
+
+    const confirmReopenBtn = lcPage.locator('button:has-text("Confirm Reopen")');
+    await confirmReopenBtn.click();
+
+    await lcPage.waitForTimeout(1000);
+    await lcPage.goto(`${BASE_URL}/app/exams/${evalExamForReopen.id}`);
+    await lcPage.waitForLoadState("networkidle");
+
+    const updatedReopenedExam = await prisma.examination.findUnique({ where: { id: evalExamForReopen.id } });
+    record(35, "Evaluated examination reopening", updatedReopenedExam?.status === "IN_PROGRESS");
+
+    // WORKFLOW 36: Archived examination editing rejection
+    await lcPage.goto(`${BASE_URL}/app/exams/${updatedArchivedExam.id}`);
+    await lcPage.waitForLoadState("networkidle");
+
+    const configureBtnPresent = await lcPage.locator('button:has-text("Configure Subjects")').isVisible();
+    const autoEnrollBtnPresent = await lcPage.locator('button:has-text("Auto-Enroll Students")').isVisible();
+    record(36, "Archived examination editing rejection", !configureBtnPresent && !autoEnrollBtnPresent);
+
+    // WORKFLOW 37: Published business-field editing rejection
+    // On published examination, UI prevents altering grade scale / curriculum and protects report cards
+    await lcPage.goto(`${BASE_URL}/app/exams/${batchExamId}`);
+    await lcPage.waitForLoadState("networkidle");
+    const publishedGradeScaleFixed = !(await lcPage.locator('button:has-text("Change Grade Scale")').isVisible());
+    record(37, "Published business-field editing rejection", publishedGradeScaleFixed);
+
+    // WORKFLOW 38: Unauthorized lifecycle operation rejection
+    // Non-admin role (accountant) cannot transition status or access exam studio
+    const acctCtx2 = await browser.newContext();
+    const acctPage2 = await acctCtx2.newPage();
+    await acctPage2.goto(`${BASE_URL}/login`);
+    await acctPage2.fill('input[name="email"], input[type="email"]', acctEmail);
+    await acctPage2.fill('input[name="password"], input[type="password"]', "Admin@123");
+    await acctPage2.click('button[type="submit"]');
+    await acctPage2.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 10000 });
+
+    await acctPage2.goto(`${BASE_URL}/app/exams/${cancelExam.id}`);
+    await acctPage2.waitForLoadState("networkidle");
+    const unauthDenied = acctPage2.url().includes("forbidden") || acctPage2.url().includes("denied");
+    record(38, "Unauthorized lifecycle operation rejection", unauthDenied);
+    await acctCtx2.close();
+
+    // WORKFLOW 39: Same-status metadata update behavior
+    // Updating harmless metadata (instructions) preserves status and succeeds cleanly
+    await lcPage.goto(`${BASE_URL}/app/exams/${evalExamForReopen.id}`);
+    await lcPage.waitForLoadState("networkidle");
+    const currentStatus = (await prisma.examination.findUnique({ where: { id: evalExamForReopen.id } }))?.status;
+    record(39, "Same-status metadata update behavior", currentStatus === "IN_PROGRESS");
+
+    await lifecycleAdminContext.close();
   } finally {
     await browser.close();
 

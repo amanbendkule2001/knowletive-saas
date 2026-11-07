@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
+  Archive,
   Award,
   BookOpen,
   Calendar,
@@ -15,6 +16,7 @@ import {
   Plus,
   Printer,
   RefreshCw,
+  RotateCcw,
   Save,
   Send,
   ShieldCheck,
@@ -31,6 +33,9 @@ import {
   correctPublishedMarkAction,
   deleteExaminationAction,
   exportExamResultsCsvAction,
+  cancelExaminationAction,
+  reopenEvaluatedExamAction,
+  archiveExaminationAction,
 } from "@/actions/exams";
 
 // ─────────────────────────────────────────────────────────────
@@ -1356,6 +1361,340 @@ export function CorrectPublishedMarkModal({
                   className="btn btn-primary btn-sm text-xs flex items-center gap-1.5"
                 >
                   {isPending ? "Applying Correction..." : "Commit Correction"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// 8. LIFECYCLE ACTION CONTROLS: CANCEL, ARCHIVE, REOPEN
+// ─────────────────────────────────────────────────────────────
+
+export function CancelExamModal({
+  examId,
+  examTitle,
+  currentStatus,
+}: {
+  examId: string;
+  examTitle: string;
+  currentStatus: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  const handleCancel = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (reason.trim().length < 10) {
+      setError("Cancellation justification must be at least 10 characters long.");
+      return;
+    }
+
+    startTransition(async () => {
+      const res = await cancelExaminationAction({
+        examId,
+        reason,
+      });
+
+      if (!res.ok) {
+        setError(res.error || "Failed to cancel examination");
+      } else {
+        setOpen(false);
+        router.refresh();
+      }
+    });
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="btn btn-error btn-outline btn-sm text-xs flex items-center gap-1.5"
+      >
+        <X className="h-3.5 w-3.5" /> Cancel Exam
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-100 dark:border-zinc-800">
+              <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+                <AlertCircle className="h-5 w-5" />
+                <h3 className="font-bold text-base text-zinc-900 dark:text-zinc-100">Cancel Examination</h3>
+              </div>
+              <button onClick={() => setOpen(false)} className="btn btn-ghost btn-circle btn-xs text-zinc-400">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-500">
+              Cancelling <strong>{examTitle}</strong> (currently {currentStatus}) will transition the examination to <strong>ARCHIVED</strong>. This action is irreversible; candidate marks and schedule will be permanently frozen.
+            </p>
+
+            {error && (
+              <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 text-rose-700 dark:text-rose-400 text-xs">
+                {error}
+              </div>
+            )}
+
+            <form onSubmit={handleCancel} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+                  Cancellation Justification * (min 10 characters)
+                </label>
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  disabled={isPending}
+                  placeholder="e.g. Examination postponed to next semester by Academic Council decision"
+                  className="textarea textarea-bordered textarea-sm w-full mt-1 text-xs"
+                  rows={3}
+                  required
+                />
+                <span className="text-[10px] text-zinc-400 block mt-0.5">
+                  {reason.trim().length} / 10 characters minimum
+                </span>
+              </div>
+
+              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  disabled={isPending}
+                  className="btn btn-ghost btn-sm text-xs"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={isPending || reason.trim().length < 10}
+                  className="btn btn-error btn-sm text-xs"
+                >
+                  {isPending ? "Cancelling..." : "Confirm Cancellation"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+export function ArchiveExamModal({
+  examId,
+  examTitle,
+}: {
+  examId: string;
+  examTitle: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  const handleArchive = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    startTransition(async () => {
+      const res = await archiveExaminationAction({
+        examId,
+        reason: reason.trim() || undefined,
+      });
+
+      if (!res.ok) {
+        setError(res.error || "Failed to archive examination");
+      } else {
+        setOpen(false);
+        router.refresh();
+      }
+    });
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="btn btn-neutral btn-outline btn-sm text-xs flex items-center gap-1.5"
+      >
+        <Archive className="h-3.5 w-3.5" /> Archive Examination
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-100 dark:border-zinc-800">
+              <div className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
+                <Archive className="h-5 w-5" />
+                <h3 className="font-bold text-base text-zinc-900 dark:text-zinc-100">Archive Examination</h3>
+              </div>
+              <button onClick={() => setOpen(false)} className="btn btn-ghost btn-circle btn-xs text-zinc-400">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-500">
+              Archiving <strong>{examTitle}</strong> will seal the examination permanently. Published report cards remain accessible to students/parents, but no further mark updates, corrections, or status changes will be permitted.
+            </p>
+
+            {error && (
+              <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 text-rose-700 dark:text-rose-400 text-xs">
+                {error}
+              </div>
+            )}
+
+            <form onSubmit={handleArchive} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+                  Archival Note (optional)
+                </label>
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  disabled={isPending}
+                  placeholder="e.g. End-of-term regular archival; all report cards verified"
+                  className="textarea textarea-bordered textarea-sm w-full mt-1 text-xs"
+                  rows={2}
+                />
+              </div>
+
+              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  disabled={isPending}
+                  className="btn btn-ghost btn-sm text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isPending}
+                  className="btn btn-neutral btn-sm text-xs"
+                >
+                  {isPending ? "Archiving..." : "Confirm Archival"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+export function ReopenEvaluatedExamModal({
+  examId,
+  examTitle,
+}: {
+  examId: string;
+  examTitle: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  const handleReopen = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (reason.trim().length < 10) {
+      setError("Reopening justification must be at least 10 characters long.");
+      return;
+    }
+
+    startTransition(async () => {
+      const res = await reopenEvaluatedExamAction({
+        examId,
+        reason,
+      });
+
+      if (!res.ok) {
+        setError(res.error || "Failed to reopen evaluation");
+      } else {
+        setOpen(false);
+        router.refresh();
+      }
+    });
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="btn btn-warning btn-outline btn-sm text-xs flex items-center gap-1.5"
+      >
+        <RotateCcw className="h-3.5 w-3.5" /> Reopen Evaluation
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-100 dark:border-zinc-800">
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <AlertCircle className="h-5 w-5" />
+                <h3 className="font-bold text-base text-zinc-900 dark:text-zinc-100">Reopen Evaluation</h3>
+              </div>
+              <button onClick={() => setOpen(false)} className="btn btn-ghost btn-circle btn-xs text-zinc-400">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-500">
+              Reopening <strong>{examTitle}</strong> will transition its status from <strong>EVALUATED</strong> back to <strong>IN_PROGRESS</strong> and unlock candidate marks so examiners can make corrections prior to publishing.
+            </p>
+
+            {error && (
+              <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 text-rose-700 dark:text-rose-400 text-xs">
+                {error}
+              </div>
+            )}
+
+            <form onSubmit={handleReopen} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+                  Reopening Justification * (min 10 characters)
+                </label>
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  disabled={isPending}
+                  placeholder="e.g. Head examiner requested un-verifying Mathematics marks for review"
+                  className="textarea textarea-bordered textarea-sm w-full mt-1 text-xs"
+                  rows={3}
+                  required
+                />
+                <span className="text-[10px] text-zinc-400 block mt-0.5">
+                  {reason.trim().length} / 10 characters minimum
+                </span>
+              </div>
+
+              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  disabled={isPending}
+                  className="btn btn-ghost btn-sm text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isPending || reason.trim().length < 10}
+                  className="btn btn-warning btn-sm text-xs"
+                >
+                  {isPending ? "Reopening..." : "Confirm Reopen"}
                 </button>
               </div>
             </form>

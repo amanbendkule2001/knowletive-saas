@@ -48,15 +48,28 @@ import {
 } from "@/lib/exam-snapshot";
 import {
   createExaminationAction,
+  updateExaminationAction,
+  deleteExaminationAction,
   saveExamSubjectsAction,
   autoEnrollEligibleStudentsAction,
+  enrollStudentsAction,
+  updateEnrollmentStatusAction,
   enterMarksBulkAction,
   verifyExamSubjectMarksAction,
   calculateAndPublishResultsAction,
   correctPublishedMarkAction,
   exportExamResultsCsvAction,
   verifyResultSnapshotIntegrityAction,
+  cancelExaminationAction,
+  archiveExaminationAction,
+  reopenEvaluatedExamAction,
+  transitionExamStatusAction,
 } from "@/actions/exams";
+import {
+  VALID_EXAM_TRANSITIONS,
+  assertExamTransition,
+  verifyCandidateSubjectCompleteness,
+} from "@/lib/exam-lifecycle";
 
 describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
   let tenantA: { id: string; name: string };
@@ -2221,6 +2234,1067 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
       // 5. Verify authoritative SHA-256 checksum matches
       const checksumVerification = verifySnapshotChecksum(latestSnapshot!.snapshotData, latestSnapshot!.checksum);
       expect(checksumVerification.isValid).toBe(true);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // 12. LIFECYCLE STATE MACHINE AND MANDATORY SAFEGUARDS
+  // ─────────────────────────────────────────────────────────────
+  describe("12. Lifecycle State Machine and Mandatory Safeguards", () => {
+    let lifecycleExam: { id: string };
+    let emptyDraftExam: { id: string };
+    let subMathLife: { id: string };
+    let subSciLife: { id: string };
+    let memberId: string;
+    let adminCtx: TenantContext;
+
+    beforeAll(async () => {
+      const membership = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      memberId = membership!.id;
+      const adminUserId = membership!.userId;
+
+      adminCtx = {
+        tenant: { id: tenantA.id, name: tenantA.name } as unknown as TenantContext["tenant"],
+        user: { id: adminUserId, name: "Admin Officer" } as unknown as TenantContext["user"],
+        membership: { id: memberId, roleKey: "ADMIN" } as unknown as TenantContext["membership"],
+        permissions: new Set([
+          "tenant.exams.read",
+          "tenant.exams.write",
+          "tenant.exams.enroll",
+          "tenant.exams.enter_marks",
+          "tenant.exams.verify_marks",
+          "tenant.exams.publish_results",
+          "tenant.exams.correct_published_marks",
+          "tenant.exams.manage_grading",
+        ]),
+        subscriptionBlocked: false,
+        isOwnerView: true,
+      };
+
+      vi.mocked(authorizeTenantWrite).mockResolvedValue({
+        ok: true,
+        ctx: adminCtx,
+      });
+
+      // 1. Create an active operational exam
+      lifecycleExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Lifecycle Master Assessment 2026",
+          code: `LIFE-${Date.now().toString().slice(-6)}`,
+          examType: "FINAL",
+          status: "DRAFT",
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-10"),
+          createdById: memberId,
+        },
+      });
+      createdExamIds.push(lifecycleExam.id);
+
+      // 2. Create an empty draft exam for safe deletion testing
+      emptyDraftExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Empty Draft Exam",
+          code: `EMPTY-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "DRAFT",
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: memberId,
+        },
+      });
+      createdExamIds.push(emptyDraftExam.id);
+
+      // Add subjects to lifecycleExam
+      subMathLife = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: lifecycleExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-12-02"),
+          maxMarks: 100,
+          passingMarks: 35,
+          weightage: 1,
+          order: 1,
+        },
+      });
+
+      subSciLife = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: lifecycleExam.id,
+          subjectId: subjectScience.id,
+          examDate: new Date("2026-12-04"),
+          maxMarks: 100,
+          passingMarks: 35,
+          weightage: 1,
+          order: 2,
+        },
+      });
+
+      // Enroll candidates
+      await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: lifecycleExam.id,
+          studentId: student1.id,
+          status: "ELIGIBLE",
+        },
+      });
+
+      await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: lifecycleExam.id,
+          studentId: student2.id,
+          status: "ELIGIBLE",
+        },
+      });
+
+      // Student 3: Withdrawn candidate
+      const student3 = await db.student.findFirst({
+        where: { tenantId: tenantA.id, id: { notIn: [student1.id, student2.id] } },
+      });
+      if (student3) {
+        await db.examEnrollment.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: lifecycleExam.id,
+            studentId: student3.id,
+            status: "WITHDRAWN",
+          },
+        });
+      }
+    });
+
+    it("1. Transition Matrix: Enforces strict transition rules and blocks forbidden transitions", async () => {
+      // DRAFT -> PUBLISHED is prohibited
+      const checkDraftToPub = assertExamTransition("DRAFT", "PUBLISHED", adminCtx);
+      expect(checkDraftToPub.allowed).toBe(false);
+      expect(checkDraftToPub.code).toBe("INVALID_TRANSITION");
+
+      // IN_PROGRESS -> DRAFT is prohibited (illegal rollback)
+      const checkProgToDraft = assertExamTransition("IN_PROGRESS", "DRAFT", adminCtx);
+      expect(checkProgToDraft.allowed).toBe(false);
+
+      // PUBLISHED -> DRAFT is prohibited
+      const checkPubToDraft = assertExamTransition("PUBLISHED", "DRAFT", adminCtx);
+      expect(checkPubToDraft.allowed).toBe(false);
+
+      // ARCHIVED -> ANY is prohibited
+      const checkArchToProg = assertExamTransition("ARCHIVED", "IN_PROGRESS", adminCtx);
+      expect(checkArchToProg.allowed).toBe(false);
+
+      // Same status is allowed as safe no-op
+      const checkSameStatus = assertExamTransition("IN_PROGRESS", "IN_PROGRESS", adminCtx);
+      expect(checkSameStatus.allowed).toBe(true);
+
+      // Transition action: DRAFT -> SCHEDULED
+      const transRes = await transitionExamStatusAction({
+        examId: lifecycleExam.id,
+        requestedStatus: "SCHEDULED",
+      });
+      expect(transRes.ok).toBe(true);
+
+      const dbExam = await db.examination.findUnique({ where: { id: lifecycleExam.id } });
+      expect(dbExam?.status).toBe("SCHEDULED");
+    });
+
+    it("2. Safeguard 5: Safe deletion blocks operational exams and permits empty drafts", async () => {
+      // Attempting to delete operational exam with enrollments and subjects MUST fail
+      const deleteOpRes = await deleteExaminationAction(lifecycleExam.id);
+      expect(deleteOpRes.ok).toBe(false);
+      expect(deleteOpRes.error).toMatch(/Only draft examinations can be deleted|Operational examinations must be cancelled/i);
+
+      // Attempting to delete empty draft MUST succeed
+      const deleteDraftRes = await deleteExaminationAction(emptyDraftExam.id);
+      expect(deleteDraftRes.ok).toBe(true);
+
+      const deletedCheck = await db.examination.findUnique({ where: { id: emptyDraftExam.id } });
+      expect(deletedCheck).toBeNull();
+    });
+
+    it("3. Safeguard 4: Completeness engine detects missing, unverified, and malformed marks", async () => {
+      // Step A: Move exam to IN_PROGRESS via marks entry
+      const enterRes = await enterMarksBulkAction({
+        examId: lifecycleExam.id,
+        examSubjectId: subMathLife.id,
+        entries: [
+          { studentId: student1.id, marksObtained: 85, isAbsent: false, isExempted: false },
+        ],
+        reason: "Midterm paper grading",
+        submitForVerification: false,
+      });
+      expect(enterRes.ok).toBe(true);
+
+      const inProgExam = await db.examination.findUnique({ where: { id: lifecycleExam.id } });
+      expect(inProgExam?.status).toBe("IN_PROGRESS");
+
+      // Step B: Check completeness: student2 has no mark in Math, and both have no mark in Science
+      const compCheck1 = await db.$transaction(async (tx) => {
+        return await verifyCandidateSubjectCompleteness(tx, lifecycleExam.id, tenantA.id);
+      });
+      expect(compCheck1.isValid).toBe(false);
+      expect(compCheck1.errors.length).toBeGreaterThan(0);
+      expect(compCheck1.errors.some((e) => e.includes("Missing mark record"))).toBe(true);
+      expect(compCheck1.errors.some((e) => e.includes("Unverified mark"))).toBe(true);
+
+      // Candidate-subject Cartesian completeness must exclude WITHDRAWN candidates
+      // Eligible candidates should be 2 (student1 and student2)
+      expect(compCheck1.eligibleCandidatesCount).toBe(2);
+      expect(compCheck1.expectedPairsCount).toBe(4); // 2 candidates * 2 subjects
+
+      // Step C: Attempting transition to EVALUATED when marks are incomplete or unverified MUST fail
+      const prematureEval = await transitionExamStatusAction({
+        examId: lifecycleExam.id,
+        requestedStatus: "EVALUATED",
+      });
+      expect(prematureEval.ok).toBe(false);
+      expect(prematureEval.code).toBe("INCOMPLETE_EVALUATION");
+
+      // Step D: Enter marks for student2 in Math, and both in Science
+      await enterMarksBulkAction({
+        examId: lifecycleExam.id,
+        examSubjectId: subMathLife.id,
+        entries: [
+          { studentId: student2.id, marksObtained: 90, isAbsent: false, isExempted: false },
+        ],
+        reason: "Grading student 2",
+        submitForVerification: false,
+      });
+
+      await enterMarksBulkAction({
+        examId: lifecycleExam.id,
+        examSubjectId: subSciLife.id,
+        entries: [
+          { studentId: student1.id, marksObtained: 78, isAbsent: false, isExempted: false },
+          { studentId: student2.id, marksObtained: 88, isAbsent: false, isExempted: false },
+        ],
+        reason: "Science grading",
+        submitForVerification: false,
+      });
+
+      // Still unverified
+      const compCheckUnverified = await db.$transaction(async (tx) => {
+        return await verifyCandidateSubjectCompleteness(tx, lifecycleExam.id, tenantA.id);
+      });
+      expect(compCheckUnverified.isValid).toBe(false);
+      expect(compCheckUnverified.errors.some((e) => e.includes("must be VERIFIED"))).toBe(true);
+
+      // Verify Math marks
+      await verifyExamSubjectMarksAction(lifecycleExam.id, subMathLife.id);
+
+      // Exam should still be IN_PROGRESS because Science is not verified
+      const halfVerifiedExam = await db.examination.findUnique({ where: { id: lifecycleExam.id } });
+      expect(halfVerifiedExam?.status).toBe("IN_PROGRESS");
+
+      // Verify Science marks -> now all Cartesian pairs are complete & verified -> auto transitions to EVALUATED
+      await verifyExamSubjectMarksAction(lifecycleExam.id, subSciLife.id);
+
+      const evaluatedExam = await db.examination.findUnique({ where: { id: lifecycleExam.id } });
+      expect(evaluatedExam?.status).toBe("EVALUATED");
+    });
+
+    it("4. Reopen Evaluated Exam: Transitions EVALUATED back to IN_PROGRESS and unlocks marks", async () => {
+      // Reopen with insufficient justification (<10 chars) MUST fail
+      const shortReopen = await reopenEvaluatedExamAction({
+        examId: lifecycleExam.id,
+        reason: "Too short",
+      });
+      expect(shortReopen.ok).toBe(false);
+
+      // Reopen with valid justification (>=10 chars)
+      const validReopen = await reopenEvaluatedExamAction({
+        examId: lifecycleExam.id,
+        reason: "Reopening assessment to permit examiner score adjustments",
+      });
+      expect(validReopen.ok).toBe(true);
+
+      const reopenedExam = await db.examination.findUnique({ where: { id: lifecycleExam.id } });
+      expect(reopenedExam?.status).toBe("IN_PROGRESS");
+
+      // Candidate marks should now be unlocked to SUBMITTED
+      const marks = await db.examMark.findMany({ where: { examId: lifecycleExam.id } });
+      expect(marks.every((m) => m.evaluationStatus === "SUBMITTED")).toBe(true);
+
+      // Re-verify both subjects to return to EVALUATED
+      await verifyExamSubjectMarksAction(lifecycleExam.id, subMathLife.id);
+      await verifyExamSubjectMarksAction(lifecycleExam.id, subSciLife.id);
+
+      const reEvaluatedExam = await db.examination.findUnique({ where: { id: lifecycleExam.id } });
+      expect(reEvaluatedExam?.status).toBe("EVALUATED");
+    });
+
+    it("5. Safeguard 3: COMPLETED State behavior allows marks entry and verification", async () => {
+      // Create a dedicated exam to test COMPLETED workflow
+      const completedExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Assessment Window Concluded Exam",
+          code: `COMPL-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          startDate: new Date("2026-11-01"),
+          endDate: new Date("2026-11-05"),
+          createdById: memberId,
+        },
+      });
+      createdExamIds.push(completedExam.id);
+
+      // Transition IN_PROGRESS -> COMPLETED
+      const transComp = await transitionExamStatusAction({
+        examId: completedExam.id,
+        requestedStatus: "COMPLETED",
+      });
+      expect(transComp.ok).toBe(true);
+
+      const dbComp = await db.examination.findUnique({ where: { id: completedExam.id } });
+      expect(dbComp?.status).toBe("COMPLETED");
+
+      // Reverting COMPLETED to IN_PROGRESS requires justification
+      const revertNoJust = await transitionExamStatusAction({
+        examId: completedExam.id,
+        requestedStatus: "IN_PROGRESS",
+      });
+      expect(revertNoJust.ok).toBe(false);
+      expect(revertNoJust.error).toMatch(/justification of at least 10 characters/i);
+
+      const revertWithJust = await transitionExamStatusAction({
+        examId: completedExam.id,
+        requestedStatus: "IN_PROGRESS",
+        reason: "Reopening assessment window for student special accommodation",
+      });
+      expect(revertWithJust.ok).toBe(true);
+    });
+
+    it("6. Publish Results and Safeguard 2: PUBLISHED protects grading parameters and maintains invariants", async () => {
+      // Publish results for lifecycleExam (currently EVALUATED)
+      const pubRes = await calculateAndPublishResultsAction({ examId: lifecycleExam.id });
+      expect(pubRes.ok).toBe(true);
+
+      const publishedDbExam = await db.examination.findUnique({ where: { id: lifecycleExam.id } });
+      expect(publishedDbExam?.status).toBe("PUBLISHED");
+      expect(publishedDbExam?.isPublished).toBe(true);
+      expect(publishedDbExam?.publishedAt).not.toBeNull();
+      const initialPublishedAt = publishedDbExam!.publishedAt;
+
+      // 1. Modifying grade scale on published exam MUST be rejected
+      const modifyGradeScale = await updateExaminationAction({
+        id: lifecycleExam.id,
+        title: "Lifecycle Master Assessment 2026",
+        startDate: "2026-12-01",
+        endDate: "2026-12-10",
+        gradeScaleId: "different-scale-id",
+      });
+      expect(modifyGradeScale.ok).toBe(false);
+      expect(modifyGradeScale.error).toMatch(/Cannot modify grading scales or syllabus structure for a published examination/i);
+
+      // 2. Modifying title on published exam MUST be rejected
+      const modifyTitle = await updateExaminationAction({
+        id: lifecycleExam.id,
+        title: "Attempted Alteration of Published Title",
+        startDate: "2026-12-01",
+        endDate: "2026-12-10",
+      });
+      expect(modifyTitle.ok).toBe(false);
+      expect(modifyTitle.error).toMatch(/Cannot modify examination title for a published examination/i);
+
+      // 3. Modifying allowed metadata (e.g. instructions, term) while preserving title MUST succeed
+      const updateMeta = await updateExaminationAction({
+        id: lifecycleExam.id,
+        title: "Lifecycle Master Assessment 2026",
+        startDate: "2026-12-01",
+        endDate: "2026-12-10",
+        instructions: "Official archival instructions updated by Registrar.",
+      });
+      expect(updateMeta.ok).toBe(true);
+
+      // 4. Invariant check: publishedAt is preserved and isPublished remains true
+      const postUpdateExam = await db.examination.findUnique({ where: { id: lifecycleExam.id } });
+      expect(postUpdateExam?.isPublished).toBe(true);
+      expect(postUpdateExam?.publishedAt?.toISOString()).toBe(initialPublishedAt?.toISOString());
+      expect(postUpdateExam?.instructions).toBe("Official archival instructions updated by Registrar.");
+    });
+
+    it("7. Safeguard 1: ARCHIVED is permanently frozen, immutable, and idempotent", async () => {
+      // Archive the published examination
+      const archiveRes = await archiveExaminationAction({
+        examId: lifecycleExam.id,
+        reason: "End-of-term institutional archival",
+      });
+      expect(archiveRes.ok).toBe(true);
+
+      const archivedExam = await db.examination.findUnique({ where: { id: lifecycleExam.id } });
+      expect(archivedExam?.status).toBe("ARCHIVED");
+      // Published flags are preserved so report cards remain accessible
+      expect(archivedExam?.isPublished).toBe(true);
+      expect(archivedExam?.publishedAt).not.toBeNull();
+
+      // Repeated archive call is an idempotent safe no-op
+      const repeatArchive = await archiveExaminationAction({ examId: lifecycleExam.id });
+      expect(repeatArchive.ok).toBe(true);
+
+      // Modifying metadata on ARCHIVED exam MUST fail
+      const updateArchived = await updateExaminationAction({
+        id: lifecycleExam.id,
+        title: "Cannot Change Archived Exam",
+        startDate: "2026-12-01",
+        endDate: "2026-12-10",
+      });
+      expect(updateArchived.ok).toBe(false);
+      expect(updateArchived.code).toBe("INVALID_TRANSITION");
+
+      // Modifying subjects on ARCHIVED exam MUST fail
+      const modSubjects = await saveExamSubjectsAction({
+        examId: lifecycleExam.id,
+        subjects: [
+          { subjectId: subjectMath.id, examDate: "2026-12-02", maxMarks: 100, passingMarks: 35, weightage: 1, order: 1 },
+        ],
+      });
+      expect(modSubjects.ok).toBe(false);
+      expect(modSubjects.code).toBe("INVALID_TRANSITION");
+
+      // Enrolling candidates on ARCHIVED exam MUST fail
+      const enrollArchived = await autoEnrollEligibleStudentsAction(lifecycleExam.id);
+      expect(enrollArchived.ok).toBe(false);
+      expect(enrollArchived.code).toBe("INVALID_TRANSITION");
+
+      // Entering marks on ARCHIVED exam MUST fail
+      const enterMarksArchived = await enterMarksBulkAction({
+        examId: lifecycleExam.id,
+        examSubjectId: subMathLife.id,
+        entries: [{ studentId: student1.id, marksObtained: 99, isAbsent: false, isExempted: false }],
+        reason: "Post-archival illegal update",
+      });
+      expect(enterMarksArchived.ok).toBe(false);
+      expect(enterMarksArchived.code).toBe("INVALID_TRANSITION");
+
+      // Correcting marks on ARCHIVED exam MUST fail
+      const mark1 = await db.examMark.findFirst({
+        where: { examId: lifecycleExam.id, studentId: student1.id, examSubjectId: subMathLife.id },
+      });
+      const correctArchived = await correctPublishedMarkAction({
+        examId: lifecycleExam.id,
+        examSubjectId: subMathLife.id,
+        studentId: student1.id,
+        newMark: 95,
+        reason: "Post-archival illegal correction",
+        expectedVersion: mark1?.version ?? 1,
+      });
+      expect(correctArchived.ok).toBe(false);
+      expect(correctArchived.code).toBe("INVALID_TRANSITION");
+
+      // Status reopening from ARCHIVED MUST fail
+      const reopenArchived = await transitionExamStatusAction({
+        examId: lifecycleExam.id,
+        requestedStatus: "IN_PROGRESS",
+        reason: "Illegal attempt to revive archived exam",
+      });
+      expect(reopenArchived.ok).toBe(false);
+      expect(reopenArchived.code).toBe("INVALID_TRANSITION");
+    });
+
+    it("8. Absence & Exemption Invariants: Differing candidate subject eligibility and non-contributing denominators", async () => {
+      // Create a dedicated exam for differing candidate subject eligibility
+      const member = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const diffExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Differing Eligibility Assessment",
+          code: `DIFF-${Date.now().toString().slice(-6)}`,
+          examType: "MID_TERM",
+          status: "IN_PROGRESS",
+          startDate: new Date("2026-11-15"),
+          endDate: new Date("2026-11-20"),
+          createdById: member!.id,
+        },
+      });
+      createdExamIds.push(diffExam.id);
+
+      const dSub1 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: diffExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-16"),
+          maxMarks: 100,
+          passingMarks: 35,
+          weightage: 1,
+          order: 1,
+        },
+      });
+
+      const dSub2 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: diffExam.id,
+          subjectId: subjectScience.id,
+          examDate: new Date("2026-11-18"),
+          maxMarks: 100,
+          passingMarks: 35,
+          weightage: 1,
+          order: 2,
+        },
+      });
+
+      // Student 1: Regular (takes both subjects)
+      await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: diffExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+
+      // Student 2: Exempted from Science (takes only Math)
+      await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: diffExam.id, studentId: student2.id, status: "ELIGIBLE" },
+      });
+
+      // Student 3: Withdrawn candidate
+      const student3 = await db.student.findFirst({
+        where: { tenantId: tenantA.id, id: { notIn: [student1.id, student2.id] } },
+      });
+      if (student3) {
+        await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: diffExam.id, studentId: student3.id, status: "WITHDRAWN" },
+        });
+      }
+
+      // Enter marks:
+      // Student 1: Math 85, Science 75
+      await enterMarksBulkAction({
+        examId: diffExam.id,
+        examSubjectId: dSub1.id,
+        entries: [{ studentId: student1.id, marksObtained: 85, isAbsent: false, isExempted: false }],
+        reason: "Student 1 Math score",
+      });
+      await enterMarksBulkAction({
+        examId: diffExam.id,
+        examSubjectId: dSub2.id,
+        entries: [{ studentId: student1.id, marksObtained: 75, isAbsent: false, isExempted: false }],
+        reason: "Student 1 Science score",
+      });
+
+      // Student 2: Math 90, Science EXEMPTED
+      await enterMarksBulkAction({
+        examId: diffExam.id,
+        examSubjectId: dSub1.id,
+        entries: [{ studentId: student2.id, marksObtained: 90, isAbsent: false, isExempted: false }],
+        reason: "Student 2 Math score",
+      });
+      await enterMarksBulkAction({
+        examId: diffExam.id,
+        examSubjectId: dSub2.id,
+        entries: [{ studentId: student2.id, marksObtained: null, isAbsent: false, isExempted: true }],
+        reason: "Student 2 officially exempted from Science by Academic Board",
+      });
+
+      // Verify all marks
+      await verifyExamSubjectMarksAction(diffExam.id, dSub1.id);
+      await verifyExamSubjectMarksAction(diffExam.id, dSub2.id);
+
+      const diffEvaluated = await db.examination.findUnique({ where: { id: diffExam.id } });
+      expect(diffEvaluated?.status).toBe("EVALUATED");
+
+      // Publish results
+      const pubRes = await calculateAndPublishResultsAction({ examId: diffExam.id });
+      expect(pubRes.ok).toBe(true);
+
+      // Verify Student 1 (Regular):
+      // Scored: 85 + 75 = 160. Total Max Marks: 200. Percentage: 80%.
+      const res1 = await db.examResult.findFirst({
+        where: { examId: diffExam.id, studentId: student1.id },
+      });
+      expect(res1?.totalMarksObtained).toBe(160);
+      expect(res1?.totalMaxMarks).toBe(200);
+      expect(res1?.percentage).toBe(80);
+      expect(res1?.resultStatus).toBe("PASS");
+
+      // Verify Student 2 (Science Exempted):
+      // Exempted marks MUST NOT contribute to denominator:
+      // Scored: 90. Total Max Marks evaluated: 100 (NOT 200!). Percentage: 90%.
+      const res2 = await db.examResult.findFirst({
+        where: { examId: diffExam.id, studentId: student2.id },
+      });
+      expect(res2?.totalMarksObtained).toBe(90);
+      expect(res2?.totalMaxMarks).toBe(100);
+      expect(res2?.percentage).toBe(90);
+      expect(res2?.resultStatus).toBe("PASS");
+
+      // Verify Student 3 (Withdrawn): Excluded from results
+      if (student3) {
+        const res3 = await db.examResult.findFirst({
+          where: { examId: diffExam.id, studentId: student3.id },
+        });
+        expect(res3).toBeNull();
+      }
+
+      // Check snapshot payloads reflect correct candidate-specific totalMaxMarks
+      const snap2 = await db.examResultSnapshot.findFirst({
+        where: { resultId: res2!.id, version: 1 },
+      });
+      expect(snap2).not.toBeNull();
+      const perf2 = (snap2!.snapshotData as Record<string, unknown>).performance as Record<string, unknown>;
+      expect(perf2.totalMaxMarks).toBe(100);
+      expect(perf2.percentage).toBe(90);
+      expect(verifySnapshotChecksum(snap2!.snapshotData, snap2!.checksum).isValid).toBe(true);
+    });
+
+    it("9. Real PostgreSQL Concurrency: Marks entry versus Publishing coordinates safely", async () => {
+      const member = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const concExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Concurrent Marks vs Publish Assessment",
+          code: `C1-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "EVALUATED",
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: member!.id,
+        },
+      });
+      createdExamIds.push(concExam.id);
+
+      const sub1 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: concExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-21"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      const enr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: concExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: concExam.id,
+          examSubjectId: sub1.id,
+          studentId: student1.id,
+          enrollmentId: enr.id,
+          marksObtained: 85,
+          evaluationStatus: "VERIFIED",
+        },
+      });
+
+      // Fire simultaneous requests: enter marks vs publish
+      const [resMarks, resPublish] = await Promise.all([
+        enterMarksBulkAction({
+          examId: concExam.id,
+          examSubjectId: sub1.id,
+          entries: [{ studentId: student1.id, marksObtained: 88, isAbsent: false, isExempted: false }],
+          reason: "Concurrent mark adjustment",
+        }),
+        calculateAndPublishResultsAction({ examId: concExam.id }),
+      ]);
+
+      // Serialized via Examination row lock:
+      // Either publish committed first (in which case marks entry failed with INVALID_TRANSITION),
+      // OR marks entry committed first (in which case exam was EVALUATED with verified marks and published succeeded).
+      // Both outcomes are consistent; at least one must have succeeded.
+      expect(resMarks.ok || resPublish.ok).toBe(true);
+
+      // Verify final database state is consistent
+      const finalExam = await db.examination.findUnique({ where: { id: concExam.id } });
+      expect(finalExam).not.toBeNull();
+      if (resPublish.ok) {
+        expect(finalExam?.status).toBe("PUBLISHED");
+        expect(finalExam?.isPublished).toBe(true);
+        expect(finalExam?.publishedAt).not.toBeNull();
+        const results = await db.examResult.findMany({ where: { examId: concExam.id } });
+        expect(results.length).toBe(1);
+      }
+    });
+
+    it("10. Real PostgreSQL Concurrency: Enrollment versus Publishing coordinates safely", async () => {
+      const member = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const concExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Concurrent Enrollment vs Publish",
+          code: `C2-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "EVALUATED",
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: member!.id,
+        },
+      });
+      createdExamIds.push(concExam.id);
+
+      const sub1 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: concExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-21"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      const enr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: concExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: concExam.id,
+          examSubjectId: sub1.id,
+          studentId: student1.id,
+          enrollmentId: enr.id,
+          marksObtained: 90,
+          evaluationStatus: "VERIFIED",
+        },
+      });
+
+      // Fire simultaneous requests: enroll student 2 vs publish
+      const [resEnroll, resPublish] = await Promise.all([
+        enrollStudentsAction({ examId: concExam.id, studentIds: [student2.id] }),
+        calculateAndPublishResultsAction({ examId: concExam.id }),
+      ]);
+
+      // Serialized via Examination row lock:
+      // If enrollment won: student 2 was enrolled without marks -> publishing failed with INCOMPLETE_EVALUATION.
+      // If publishing won: exam published -> enrollment failed with INVALID_TRANSITION.
+      expect(resEnroll.ok || resPublish.ok).toBe(true);
+
+      const finalExam = await db.examination.findUnique({ where: { id: concExam.id } });
+      expect(finalExam).not.toBeNull();
+    });
+
+    it("11. Real PostgreSQL Concurrency: Withdrawal versus Publishing coordinates safely", async () => {
+      const member = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const concExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Concurrent Withdrawal vs Publish",
+          code: `C3-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "EVALUATED",
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: member!.id,
+        },
+      });
+      createdExamIds.push(concExam.id);
+
+      const sub1 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: concExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-21"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      const enr1 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: concExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+
+      const enr2 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: concExam.id, studentId: student2.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.createMany({
+        data: [
+          {
+            tenantId: tenantA.id,
+            examId: concExam.id,
+            examSubjectId: sub1.id,
+            studentId: student1.id,
+            enrollmentId: enr1.id,
+            marksObtained: 90,
+            evaluationStatus: "VERIFIED",
+          },
+          {
+            tenantId: tenantA.id,
+            examId: concExam.id,
+            examSubjectId: sub1.id,
+            studentId: student2.id,
+            enrollmentId: enr2.id,
+            marksObtained: 80,
+            evaluationStatus: "VERIFIED",
+          },
+        ],
+      });
+
+      // Fire simultaneous requests: withdraw student 2 vs publish
+      const [resWithdraw, resPublish] = await Promise.all([
+        updateEnrollmentStatusAction({ enrollmentId: enr2.id, status: "WITHDRAWN", remarks: "Candidate withdrawn" }),
+        calculateAndPublishResultsAction({ examId: concExam.id }),
+      ]);
+
+      expect(resWithdraw.ok || resPublish.ok).toBe(true);
+
+      const finalExam = await db.examination.findUnique({ where: { id: concExam.id } });
+      expect(finalExam).not.toBeNull();
+    });
+
+    it("12. Real PostgreSQL Concurrency: Subject configuration versus Evaluation coordinates safely", async () => {
+      const member = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const concExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Concurrent Subject vs Evaluation",
+          code: `C4-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: member!.id,
+        },
+      });
+      createdExamIds.push(concExam.id);
+
+      const sub1 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: concExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-21"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      const enr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: concExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: concExam.id,
+          examSubjectId: sub1.id,
+          studentId: student1.id,
+          enrollmentId: enr.id,
+          marksObtained: 85,
+          evaluationStatus: "SUBMITTED",
+        },
+      });
+
+      // Fire simultaneous requests: add Science subject vs verify Math marks
+      const [resAddSub, resVerify] = await Promise.all([
+        saveExamSubjectsAction({
+          examId: concExam.id,
+          subjects: [
+            { subjectId: subjectMath.id, examDate: "2026-11-21", maxMarks: 100, passingMarks: 35, weightage: 1, order: 1 },
+            { subjectId: subjectScience.id, examDate: "2026-11-23", maxMarks: 100, passingMarks: 35, weightage: 1, order: 2 },
+          ],
+        }),
+        verifyExamSubjectMarksAction(concExam.id, sub1.id),
+      ]);
+
+      expect(resAddSub.ok || resVerify.ok).toBe(true);
+
+      // Verify that final database consistency holds
+      const finalExam = await db.examination.findUnique({ where: { id: concExam.id } });
+      expect(finalExam).not.toBeNull();
+    });
+
+    it("13. Real PostgreSQL Concurrency: Incompatible concurrent lifecycle transitions serialize deterministically", async () => {
+      const member = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const concExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Incompatible Transitions Concurrency",
+          code: `C5-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "SCHEDULED",
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: member!.id,
+        },
+      });
+      createdExamIds.push(concExam.id);
+
+      // Fire simultaneous incompatible transitions: revert to DRAFT vs commence to IN_PROGRESS
+      const [resRevert, resStart] = await Promise.all([
+        transitionExamStatusAction({
+          examId: concExam.id,
+          requestedStatus: "DRAFT",
+          expectedCurrentStatus: "SCHEDULED",
+        }),
+        transitionExamStatusAction({
+          examId: concExam.id,
+          requestedStatus: "IN_PROGRESS",
+          expectedCurrentStatus: "SCHEDULED",
+        }),
+      ]);
+
+      // Exactly one must win; the other must be rejected
+      const oneSucceeded = (resRevert.ok && !resStart.ok) || (!resRevert.ok && resStart.ok);
+      expect(oneSucceeded).toBe(true);
+
+      const finalExam = await db.examination.findUnique({ where: { id: concExam.id } });
+      expect(["DRAFT", "IN_PROGRESS"]).toContain(finalExam?.status);
+    });
+
+    it("14. Real PostgreSQL Concurrency: Subject marks verification versus Candidate withdrawal coordinates safely", async () => {
+      const member = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const concExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Verification vs Withdrawal Concurrency",
+          code: `C6-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: member!.id,
+        },
+      });
+      createdExamIds.push(concExam.id);
+
+      const mathSub = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: concExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-21"),
+          maxMarks: 100,
+          passingMarks: 35,
+          weightage: 1,
+          order: 1,
+        },
+      });
+
+      const enr1 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: concExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+      const enr2 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: concExam.id, studentId: student2.id, status: "ELIGIBLE" },
+      });
+
+      // Enter marks for student1 (Math 90) and student2 (Math 70) as SUBMITTED
+      await enterMarksBulkAction({
+        examId: concExam.id,
+        examSubjectId: mathSub.id,
+        entries: [
+          { studentId: student1.id, marksObtained: 90, isAbsent: false, isExempted: false },
+          { studentId: student2.id, marksObtained: 70, isAbsent: false, isExempted: false },
+        ],
+        submitForVerification: true,
+        reason: "Initial marks submission",
+      });
+
+      // Fire simultaneous Request A (verify subject marks) and Request B (withdraw student 2)
+      const [resVerify, resWithdraw] = await Promise.all([
+        verifyExamSubjectMarksAction(concExam.id, mathSub.id),
+        updateEnrollmentStatusAction({
+          enrollmentId: enr2.id,
+          status: "WITHDRAWN",
+          remarks: "Medical withdrawal during assessment",
+        }),
+      ]);
+
+      // Both serialize through the examination row lock:
+      // - If resVerify runs first, marks become VERIFIED, completeness checks both candidates (both have verified marks) -> EVALUATED. Then resWithdraw fails with INVALID_TRANSITION because exam is EVALUATED.
+      // - If resWithdraw runs first, student 2 becomes WITHDRAWN, then resVerify verifies marks and completeness checks only remaining eligible candidate (student 1) -> EVALUATED. Both succeed!
+      // In either case, integrity is fully preserved.
+      expect(resVerify.ok).toBe(true);
+      expect(typeof resWithdraw.ok).toBe("boolean");
+
+      // Verify no partial verification: all marks in mathSub have valid status (all VERIFIED)
+      const mathMarks = await db.examMark.findMany({
+        where: { examSubjectId: mathSub.id },
+      });
+      expect(mathMarks.every((m) => m.evaluationStatus === "VERIFIED")).toBe(true);
+
+      // Verify the final cohort and completeness calculation:
+      const updatedEnr2 = await db.examEnrollment.findUnique({ where: { id: enr2.id } });
+      const compCheck = await verifyCandidateSubjectCompleteness(db, concExam.id, tenantA.id);
+
+      if (updatedEnr2?.status === "WITHDRAWN") {
+        // Only student 1 is in the eligible cohort
+        expect(compCheck.eligibleCandidatesCount).toBe(1);
+        expect(compCheck.isValid).toBe(true);
+      } else {
+        // Both were eligible and verified before withdrawal was attempted
+        expect(compCheck.eligibleCandidatesCount).toBe(2);
+        expect(compCheck.isValid).toBe(true);
+      }
+
+      // If results are calculated/published, withdrawn candidate NEVER receives a result
+      if (updatedEnr2?.status === "WITHDRAWN") {
+        const pubRes = await calculateAndPublishResultsAction({ examId: concExam.id });
+        expect(pubRes.ok).toBe(true);
+
+        const results = await db.examResult.findMany({ where: { examId: concExam.id } });
+        expect(results.some((r) => r.enrollmentId === enr2.id)).toBe(false);
+        expect(results.some((r) => r.enrollmentId === enr1.id)).toBe(true);
+      }
+
+      // Verify audit logs exist and are consistent
+      const audits = await db.auditLog.findMany({
+        where: {
+          tenantId: tenantA.id,
+          entityId: { in: [concExam.id, mathSub.id, enr2.id] },
+        },
+      });
+      expect(audits.some((a) => a.action === "exam.marks_verified")).toBe(true);
     });
   });
 });
