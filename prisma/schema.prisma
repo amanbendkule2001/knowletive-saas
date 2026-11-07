@@ -1466,7 +1466,8 @@ model ExamResultSnapshot {
   tenantId     String
   examId       String
   studentId    String
-  resultId     String   @unique
+  resultId     String
+  version      Int      @default(1)
   snapshotData Json
   checksum     String
   generatedAt  DateTime @default(now())
@@ -1476,6 +1477,7 @@ model ExamResultSnapshot {
   student Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
   result  ExamResult  @relation(fields: [resultId], references: [id], onDelete: Cascade)
 
+  @@unique([resultId, version])
   @@index([examId, studentId])
 }
 

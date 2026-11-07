@@ -327,6 +327,81 @@ async function runBrowserWorkflows() {
     const batchResultCount = await prisma.examResult.count({ where: { examId: batchExamId } });
     record(19, "Publishes Batch Results & Generates Official Report Cards", batchResultCount > 0, `Results: ${batchResultCount}`);
 
+    // WORKFLOW 31: Principal-Authorized Published-Mark Correction via UI
+    await adminPage.goto(`${BASE_URL}/app/exams/${batchExamId}?tab=results`);
+    await adminPage.waitForLoadState("networkidle");
+
+    const correctBtn = adminPage.locator('button:has-text("Correct Mark")').first();
+    const canSeeCorrectBtn = await correctBtn.isVisible();
+
+    let correctionSuccess = false;
+    if (canSeeCorrectBtn) {
+      await correctBtn.click();
+      await adminPage.waitForSelector('h3:has-text("Correct Published Mark")');
+
+      // Fill in new mark and justification
+      const markInput = adminPage.locator('input[type="number"]').last();
+      await markInput.fill("98");
+
+      const reasonTextarea = adminPage.locator('textarea');
+      await reasonTextarea.fill("Academic Board approved revaluation for Question 3");
+
+      await adminPage.click('button:has-text("Commit Correction")');
+      await adminPage.waitForSelector('span:has-text("Mark corrected successfully!")', { timeout: 8000 });
+      await adminPage.waitForSelector('h3:has-text("Correct Published Mark")', { state: "detached", timeout: 8000 });
+      await adminPage.waitForLoadState("networkidle");
+      await adminPage.waitForTimeout(1000);
+
+      // Verify that the updated mark revision event exists in database
+      const updatedRevision = await prisma.examMarksRevisionEvent.findFirst({
+        where: { examId: batchExamId, reason: { contains: "Academic Board approved" } },
+      });
+      correctionSuccess = !!updatedRevision;
+    }
+
+    record(31, "Principal-Authorized Published-Mark Correction via UI", correctionSuccess);
+
+    // WORKFLOW 32: Stale-Version UI Rejection & Prompted Refresh Flow
+    let staleRejectionVerified = false;
+    const correctBtn2 = adminPage.locator('button:has-text("Correct Mark")').first();
+    if (await correctBtn2.isVisible()) {
+      await correctBtn2.click();
+      await adminPage.waitForSelector('h3:has-text("Correct Published Mark")');
+
+      // Find the exact candidate mark updated in Workflow 31
+      const markToStale = await prisma.examMark.findFirst({
+        where: { examId: batchExamId, marksObtained: 98 },
+      });
+
+      if (markToStale) {
+        // Concurrently increment mark version out-of-band in database to simulate concurrent edit
+        await prisma.examMark.update({
+          where: { id: markToStale.id },
+          data: { version: { increment: 1 } },
+        });
+
+        // Fill form and submit with the stale expectedVersion loaded in the modal
+        const markInput = adminPage.locator('input[type="number"]').last();
+        await markInput.fill("85");
+        const reasonTextarea = adminPage.locator('textarea');
+        await reasonTextarea.fill("Concurrent modification attempt by second user");
+
+        await adminPage.click('button:has-text("Commit Correction")');
+
+        // Modal should display STALE_VERSION alert and refresh button
+        await adminPage.waitForSelector('text=The mark has been modified by another process', { timeout: 8000 });
+        const refreshBtn = adminPage.locator('button:has-text("Refresh Results Now")');
+        const hasRefreshBtn = await refreshBtn.isVisible();
+
+        if (hasRefreshBtn) {
+          await refreshBtn.click();
+          await adminPage.waitForSelector('h3:has-text("Correct Published Mark")', { state: "detached", timeout: 8000 });
+          staleRejectionVerified = true;
+        }
+      }
+    }
+    record(32, "Stale-Version UI Rejection & Prompted Refresh Flow", staleRejectionVerified);
+
     await adminContext.close();
 
     // ─────────────────────────────────────────────────────────────────

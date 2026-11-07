@@ -23,6 +23,16 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
+vi.mock("@/lib/rbac", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    authorizeTenantWrite: vi.fn(),
+  };
+});
+
+import { authorizeTenantWrite } from "@/lib/rbac";
+import type { TenantContext } from "@/lib/auth";
 import { db } from "@/lib/db";
 import {
   createExaminationSchema,
@@ -991,6 +1001,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
             examId: exam.id,
             studentId: result.studentId,
             resultId: result.id,
+            version: 2,
             snapshotData: newPayload,
             checksum: newChecksum,
           },
@@ -1212,33 +1223,1004 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
       expect(resExpelled.rank).toBeNull();
     });
 
-    it("Marks Correction Schema: Enforces minimum 10-character meaningful justification", () => {
+    it("Marks Correction Schema: Enforces mandatory expectedVersion and minimum 10-character justification", () => {
       const valid = correctPublishedMarkSchema.safeParse({
+        examId: "exam-1",
+        examSubjectId: "sub-1",
+        studentId: "student-1",
+        newMark: 85,
+        expectedVersion: 1,
+        reason: "Re-evaluation of final calculus question requested by academic committee",
+      });
+      expect(valid.success).toBe(true);
+
+      const missingVersion = correctPublishedMarkSchema.safeParse({
         examId: "exam-1",
         examSubjectId: "sub-1",
         studentId: "student-1",
         newMark: 85,
         reason: "Re-evaluation of final calculus question requested by academic committee",
       });
-      expect(valid.success).toBe(true);
+      expect(missingVersion.success).toBe(false);
 
       const tooShort = correctPublishedMarkSchema.safeParse({
         examId: "exam-1",
         examSubjectId: "sub-1",
         studentId: "student-1",
         newMark: 85,
-        reason: "wrong mark", // Only 10 chars with spaces or < 10
+        expectedVersion: 1,
+        reason: "wrong mark",
       });
-      // "wrong" is 5 chars
+      expect(tooShort.success).toBe(true); // "wrong mark" is exactly 10 characters
+
       const shortFail = correctPublishedMarkSchema.safeParse({
         examId: "exam-1",
         examSubjectId: "sub-1",
         studentId: "student-1",
         newMark: 85,
+        expectedVersion: 1,
         reason: "mistake",
       });
       expect(shortFail.success).toBe(false);
       expect(shortFail.error?.issues[0]?.message).toContain("minimum 10 characters");
+    });
+  });
+
+  describe("10. Stage 4.3 — Step 1: Versioned Snapshot Integrity & Regression Suite", () => {
+    it("Multiple snapshots for one result can be created and version increments sequentially", async () => {
+      const membership = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const testExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Versioned Snapshot Test Exam",
+          code: `VER-SNAP-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "PUBLISHED",
+          isPublished: true,
+          startDate: new Date("2026-11-01"),
+          endDate: new Date("2026-11-05"),
+          createdById: membership!.id,
+        },
+      });
+      createdExamIds.push(testExam.id);
+
+      const testEnrollment = await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          studentId: student1.id,
+          status: "ELIGIBLE",
+        },
+      });
+
+      const testResult = await db.examResult.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          studentId: student1.id,
+          enrollmentId: testEnrollment.id,
+          totalMaxMarks: 100,
+          totalMarksObtained: 85,
+          percentage: 85,
+          grade: "A",
+          gradePoint: 9,
+          rank: 1,
+          processingStatus: "PUBLISHED",
+          resultStatus: "PASS",
+        },
+      });
+
+      // 1. Initial publication creates snapshot version 1
+      const payloadV1 = {
+        examId: testExam.id,
+        studentId: student1.id,
+        percentage: 85,
+        version: 1,
+      };
+      const snapV1 = await db.examResultSnapshot.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          studentId: student1.id,
+          resultId: testResult.id,
+          version: 1,
+          snapshotData: payloadV1,
+          checksum: computeSnapshotChecksum(payloadV1),
+        },
+      });
+      expect(snapV1.version).toBe(1);
+
+      // 2. A subsequent correction creates version 2 without modifying or deleting version 1
+      const payloadV2 = {
+        examId: testExam.id,
+        studentId: student1.id,
+        percentage: 88,
+        version: 2,
+        correctionReason: "Subjective question re-evaluation",
+      };
+      const snapV2 = await db.examResultSnapshot.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          studentId: student1.id,
+          resultId: testResult.id,
+          version: 2,
+          snapshotData: payloadV2,
+          checksum: computeSnapshotChecksum(payloadV2),
+        },
+      });
+      expect(snapV2.version).toBe(2);
+
+      // 3. Verify total snapshot count is 2
+      const allSnapshots = await db.examResultSnapshot.findMany({
+        where: { resultId: testResult.id },
+        orderBy: { version: "asc" },
+      });
+      expect(allSnapshots.length).toBe(2);
+      expect(allSnapshots[0].version).toBe(1);
+      expect(allSnapshots[1].version).toBe(2);
+
+      // 4. Verify previous snapshot content remains completely unchanged
+      expect(allSnapshots[0].checksum).toBe(snapV1.checksum);
+      expect((allSnapshots[0].snapshotData as Record<string, unknown>).percentage).toBe(85);
+      expect((allSnapshots[1].snapshotData as Record<string, unknown>).percentage).toBe(88);
+
+      // 5. Verify latest-snapshot retrieval selects the highest version
+      const latestSnapshot = await db.examResultSnapshot.findFirst({
+        where: { resultId: testResult.id },
+        orderBy: { version: "desc" },
+      });
+      expect(latestSnapshot).not.toBeNull();
+      expect(latestSnapshot?.version).toBe(2);
+      expect(latestSnapshot?.id).toBe(snapV2.id);
+
+      // 6. Verify duplicate version insertion for same result is rejected by unique constraint
+      await expect(
+        db.examResultSnapshot.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: testExam.id,
+            studentId: student1.id,
+            resultId: testResult.id,
+            version: 1, // Duplicate of existing version 1!
+            snapshotData: payloadV1,
+            checksum: "duplicate-checksum",
+          },
+        })
+      ).rejects.toThrow();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // 11. STEP 1.1: CONCURRENT SNAPSHOT VERSION ALLOCATION & CONCURRENCY HARDENING
+  // ─────────────────────────────────────────────────────────────
+  describe("11. Stage 4.3 — Step 1.1: Concurrent Snapshot Version Allocation & Optimistic Concurrency Hardening", () => {
+    let testExam: { id: string };
+    let subMath: { id: string };
+    let subSci: { id: string };
+    let markMath: { id: string };
+    let markSci: { id: string };
+    let testEnrollment: { id: string };
+    let testResult: { id: string };
+    let initialSnapshot: { id: string; version: number };
+    let adminUserId: string;
+
+    beforeAll(async () => {
+      const membership = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      adminUserId = membership?.userId || "user-admin-default";
+
+      // Configure authorized tenant context mock
+      vi.mocked(authorizeTenantWrite).mockResolvedValue({
+        ok: true,
+        ctx: {
+          tenant: { id: tenantA.id, name: tenantA.name } as unknown as TenantContext["tenant"],
+          user: { id: adminUserId, name: "Admin Officer" } as unknown as TenantContext["user"],
+          membership: { roleKey: "ADMIN" } as unknown as TenantContext["membership"],
+          permissions: new Set(["tenant.exams.correct_published_marks"]),
+          subscriptionBlocked: false,
+          isOwnerView: true,
+        },
+      });
+
+      testExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Concurrency Hardening Exam",
+          code: `CONCUR-${Date.now().toString().slice(-6)}`,
+          examType: "MID_TERM",
+          status: "PUBLISHED",
+          isPublished: true,
+          publishedAt: new Date(),
+          startDate: new Date("2026-11-01"),
+          endDate: new Date("2026-11-05"),
+          createdById: membership!.id,
+        },
+      });
+      createdExamIds.push(testExam.id);
+
+      subMath = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-02"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      subSci = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          subjectId: subjectScience.id,
+          examDate: new Date("2026-11-03"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 2,
+        },
+      });
+
+      testEnrollment = await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          studentId: student1.id,
+          status: "ELIGIBLE",
+        },
+      });
+
+      markMath = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          examSubjectId: subMath.id,
+          studentId: student1.id,
+          enrollmentId: testEnrollment.id,
+          marksObtained: 80,
+          evaluationStatus: "VERIFIED",
+          version: 1,
+        },
+      });
+
+      markSci = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          examSubjectId: subSci.id,
+          studentId: student1.id,
+          enrollmentId: testEnrollment.id,
+          marksObtained: 75,
+          evaluationStatus: "VERIFIED",
+          version: 1,
+        },
+      });
+
+      testResult = await db.examResult.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          studentId: student1.id,
+          enrollmentId: testEnrollment.id,
+          totalMaxMarks: 200,
+          totalMarksObtained: 155,
+          percentage: 77.5,
+          grade: "B+",
+          gradePoint: 8,
+          rank: 1,
+          processingStatus: "PUBLISHED",
+          resultStatus: "PASS",
+          passedSubjectsCount: 2,
+          failedSubjectsCount: 0,
+        },
+      });
+
+      const initialPayload = {
+        examId: testExam.id,
+        studentId: student1.id,
+        totalMarksObtained: 155,
+        percentage: 77.5,
+        version: 1,
+      };
+
+      initialSnapshot = await db.examResultSnapshot.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: testExam.id,
+          studentId: student1.id,
+          resultId: testResult.id,
+          version: 1,
+          snapshotData: initialPayload,
+          checksum: computeSnapshotChecksum(initialPayload),
+        },
+      });
+    });
+
+    it("1. handles concurrent corrections affecting different marks for the same result with serialized version allocation", async () => {
+      expect(initialSnapshot.version).toBe(1);
+      // Both corrections target the same candidate/result concurrently on different subjects
+      const [res1, res2] = await Promise.all([
+        correctPublishedMarkAction({
+          examId: testExam.id,
+          examSubjectId: subMath.id,
+          studentId: student1.id,
+          newMark: 85,
+          reason: "Recounting verified math answer sheet marks",
+          expectedVersion: 1,
+        }),
+        correctPublishedMarkAction({
+          examId: testExam.id,
+          examSubjectId: subSci.id,
+          studentId: student1.id,
+          newMark: 90,
+          reason: "Practical experiment bonus marks added",
+          expectedVersion: 1,
+        }),
+      ]);
+
+      expect(res1.ok).toBe(true);
+      expect(res2.ok).toBe(true);
+
+      // Verify snapshots allocated sequential versions without collision
+      const snapshots = await db.examResultSnapshot.findMany({
+        where: { resultId: testResult.id },
+        orderBy: { version: "asc" },
+      });
+
+      // We should now have versions 1, 2, and 3
+      expect(snapshots.length).toBe(3);
+      expect(snapshots.map((s) => s.version)).toEqual([1, 2, 3]);
+
+      // All snapshot checksums must be valid
+      for (const snap of snapshots) {
+        expect(verifySnapshotChecksum(snap.snapshotData, snap.checksum).isValid).toBe(true);
+      }
+
+      // Check final result matches both corrections (85 + 90 = 175)
+      const updatedResult = await db.examResult.findUnique({
+        where: { id: testResult.id },
+      });
+      expect(updatedResult?.totalMarksObtained).toBe(175);
+      expect(updatedResult?.percentage).toBe(87.5);
+    });
+
+    it("2. detects concurrent conflict on the same mark and rejects stale version with STALE_VERSION code", async () => {
+      // Current mark for Math is at version 2 (after test 1)
+      const currentMathMark = await db.examMark.findUnique({
+        where: { id: markMath.id },
+      });
+      expect(currentMathMark?.version).toBe(2);
+
+      // Simulate two concurrent requests with stale expectedVersion 2
+      const [resA, resB] = await Promise.all([
+        correctPublishedMarkAction({
+          examId: testExam.id,
+          examSubjectId: subMath.id,
+          studentId: student1.id,
+          newMark: 88,
+          reason: "Teacher revision A applied correctly",
+          expectedVersion: 2,
+        }),
+        correctPublishedMarkAction({
+          examId: testExam.id,
+          examSubjectId: subMath.id,
+          studentId: student1.id,
+          newMark: 92,
+          reason: "Teacher revision B applied concurrently",
+          expectedVersion: 2,
+        }),
+      ]);
+
+      // Exactly one must succeed and one must return STALE_VERSION
+      const succeeded = [resA, resB].filter((r) => r.ok);
+      const failed = [resA, resB].filter((r) => !r.ok);
+
+      expect(succeeded.length).toBe(1);
+      expect(failed.length).toBe(1);
+      expect(failed[0].code).toBe("STALE_VERSION");
+      expect(failed[0].error).toContain("modified by another process");
+
+      // Verify the mark version incremented exactly once (from 2 to 3)
+      const finalMathMark = await db.examMark.findUnique({
+        where: { id: markMath.id },
+      });
+      expect(finalMathMark?.version).toBe(3);
+    });
+
+    it("3. rejects fast when caller provides an outdated expectedVersion without modifying state", async () => {
+      // Mark is now at version 3. Providing expectedVersion: 1 should fail fast.
+      const res = await correctPublishedMarkAction({
+        examId: testExam.id,
+        examSubjectId: subMath.id,
+        studentId: student1.id,
+        newMark: 99,
+        reason: "Stale caller attempting outdated update",
+        expectedVersion: 1,
+      });
+
+      expect(res.ok).toBe(false);
+      expect(res.code).toBe("STALE_VERSION");
+
+      // Verify mark was untouched
+      const mark = await db.examMark.findUnique({
+        where: { id: markMath.id },
+      });
+      expect(mark?.version).toBe(3);
+      expect(mark?.marksObtained).not.toBe(99);
+    });
+
+    it("4. performs complete rollback and leaves no partial records on transaction failure", async () => {
+      const markBefore = await db.examMark.findUnique({ where: { id: markSci.id } });
+      const revEventsBefore = await db.examMarksRevisionEvent.count({ where: { examId: testExam.id } });
+      const snapshotsBefore = await db.examResultSnapshot.count({ where: { resultId: testResult.id } });
+
+      // Attempt correction for a non-existent student in this exam to trigger transaction abort
+      const res = await correctPublishedMarkAction({
+        examId: testExam.id,
+        examSubjectId: subSci.id,
+        studentId: "non-existent-student-id",
+        newMark: 95,
+        expectedVersion: 1,
+        reason: "Invalid candidate should abort completely",
+      });
+
+      expect(res.ok).toBe(false);
+
+      // Verify state was completely rolled back: no mark change, no orphan revision event, no orphan snapshot
+      const markAfter = await db.examMark.findUnique({ where: { id: markSci.id } });
+      const revEventsAfter = await db.examMarksRevisionEvent.count({ where: { examId: testExam.id } });
+      const snapshotsAfter = await db.examResultSnapshot.count({ where: { resultId: testResult.id } });
+
+      expect(markAfter?.marksObtained).toBe(markBefore?.marksObtained);
+      expect(markAfter?.version).toBe(markBefore?.version);
+      expect(revEventsAfter).toBe(revEventsBefore);
+      expect(snapshotsAfter).toBe(snapshotsBefore);
+    });
+
+    it("5. ensures no duplicate snapshot versions exist in database for any result", async () => {
+      const duplicates = await db.$queryRaw<Array<{ resultId: string; version: number; count: bigint }>>`
+        SELECT "resultId", "version", COUNT(*) as count
+        FROM "ExamResultSnapshot"
+        WHERE "resultId" = ${testResult.id}
+        GROUP BY "resultId", "version"
+        HAVING COUNT(*) > 1
+      `;
+      expect(duplicates.length).toBe(0);
+    });
+
+    it("6. retrieves latest snapshot by highest version accurately", async () => {
+      const latestSnapshot = await db.examResultSnapshot.findFirst({
+        where: { resultId: testResult.id },
+        orderBy: { version: "desc" },
+      });
+
+      expect(latestSnapshot).not.toBeNull();
+      // Should be at version 4 (v1 initial + v2 Math + v3 Sci + v4 Math from test 2)
+      expect(latestSnapshot?.version).toBe(4);
+      expect(verifySnapshotChecksum(latestSnapshot?.snapshotData, latestSnapshot!.checksum).isValid).toBe(true);
+    });
+
+    it("7. Cross-candidate concurrency within one exam: Request A (Student 1) and Request B (Student 2) execute simultaneously with accurate rank recalculation and serialization", async () => {
+      // Create a fresh published exam with two candidates where corrections flip their institutional ranking
+      const membership = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const crossExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Cross-Candidate Ranking Concurrency Exam",
+          code: `CROSS-${Date.now().toString().slice(-6)}`,
+          examType: "FINAL",
+          status: "PUBLISHED",
+          isPublished: true,
+          publishedAt: new Date(),
+          startDate: new Date("2026-11-01"),
+          endDate: new Date("2026-11-05"),
+          createdById: membership!.id,
+        },
+      });
+      createdExamIds.push(crossExam.id);
+
+      const crossSubject = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: crossExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-02"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      const enr1 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: crossExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+      const enr2 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: crossExam.id, studentId: student2.id, status: "ELIGIBLE" },
+      });
+
+      // Student 1 starts with 60 marks (version 1)
+      const mark1 = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: crossExam.id,
+          examSubjectId: crossSubject.id,
+          studentId: student1.id,
+          enrollmentId: enr1.id,
+          marksObtained: 60,
+          evaluationStatus: "VERIFIED",
+          version: 1,
+        },
+      });
+
+      // Student 2 starts with 70 marks (version 1) -> Rank 1
+      const mark2 = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: crossExam.id,
+          examSubjectId: crossSubject.id,
+          studentId: student2.id,
+          enrollmentId: enr2.id,
+          marksObtained: 70,
+          evaluationStatus: "VERIFIED",
+          version: 1,
+        },
+      });
+
+      // Initial results: Student 2 is Rank 1, Student 1 is Rank 2
+      const res1 = await db.examResult.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: crossExam.id,
+          studentId: student1.id,
+          enrollmentId: enr1.id,
+          totalMaxMarks: 100,
+          totalMarksObtained: 60,
+          percentage: 60,
+          grade: "B",
+          gradePoint: 7,
+          rank: 2,
+          processingStatus: "PUBLISHED",
+          resultStatus: "PASS",
+        },
+      });
+
+      const res2 = await db.examResult.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: crossExam.id,
+          studentId: student2.id,
+          enrollmentId: enr2.id,
+          totalMaxMarks: 100,
+          totalMarksObtained: 70,
+          percentage: 70,
+          grade: "B+",
+          gradePoint: 8,
+          rank: 1,
+          processingStatus: "PUBLISHED",
+          resultStatus: "PASS",
+        },
+      });
+
+      // Initial snapshots (version 1)
+      const payload1 = { examId: crossExam.id, studentId: student1.id, marks: 60, rank: 2 };
+      const payload2 = { examId: crossExam.id, studentId: student2.id, marks: 70, rank: 1 };
+      await db.examResultSnapshot.createMany({
+        data: [
+          {
+            tenantId: tenantA.id,
+            examId: crossExam.id,
+            studentId: student1.id,
+            resultId: res1.id,
+            version: 1,
+            snapshotData: payload1,
+            checksum: computeSnapshotChecksum(payload1),
+          },
+          {
+            tenantId: tenantA.id,
+            examId: crossExam.id,
+            studentId: student2.id,
+            resultId: res2.id,
+            version: 1,
+            snapshotData: payload2,
+            checksum: computeSnapshotChecksum(payload2),
+          },
+        ],
+      });
+
+      // Simultaneously correct Candidate 1 to 95 (flips to Rank 1) and Candidate 2 to 80 (Rank 2)
+      const [corrA, corrB] = await Promise.all([
+        correctPublishedMarkAction({
+          examId: crossExam.id,
+          examSubjectId: crossSubject.id,
+          studentId: student1.id,
+          newMark: 95,
+          expectedVersion: 1,
+          reason: "Candidate 1 revaluation pushes score to 95",
+        }),
+        correctPublishedMarkAction({
+          examId: crossExam.id,
+          examSubjectId: crossSubject.id,
+          studentId: student2.id,
+          newMark: 80,
+          expectedVersion: 1,
+          reason: "Candidate 2 revaluation pushes score to 80",
+        }),
+      ]);
+
+      expect(corrA.ok).toBe(true);
+      expect(corrB.ok).toBe(true);
+
+      // Verify no lost updates: Student 1 has 95 (v2), Student 2 has 80 (v2)
+      const finalMark1 = await db.examMark.findUnique({ where: { id: mark1.id } });
+      const finalMark2 = await db.examMark.findUnique({ where: { id: mark2.id } });
+      expect(finalMark1?.marksObtained).toBe(95);
+      expect(finalMark1?.version).toBe(2);
+      expect(finalMark2?.marksObtained).toBe(80);
+      expect(finalMark2?.version).toBe(2);
+
+      // Verify rankings recalculated consistently across candidates without tie or collision
+      const finalRes1 = await db.examResult.findUnique({ where: { id: res1.id } });
+      const finalRes2 = await db.examResult.findUnique({ where: { id: res2.id } });
+      expect(finalRes1?.totalMarksObtained).toBe(95);
+      expect(finalRes1?.rank).toBe(1);
+      expect(finalRes2?.totalMarksObtained).toBe(80);
+      expect(finalRes2?.rank).toBe(2);
+
+      // Verify snapshots: each student has version 2 with correct ranks and valid checksums
+      const snap1V2 = await db.examResultSnapshot.findUnique({
+        where: { resultId_version: { resultId: res1.id, version: 2 } },
+      });
+      const snap2V2 = await db.examResultSnapshot.findUnique({
+        where: { resultId_version: { resultId: res2.id, version: 2 } },
+      });
+
+      expect(snap1V2).not.toBeNull();
+      expect(snap2V2).not.toBeNull();
+      expect(verifySnapshotChecksum(snap1V2?.snapshotData, snap1V2!.checksum).isValid).toBe(true);
+      expect(verifySnapshotChecksum(snap2V2?.snapshotData, snap2V2!.checksum).isValid).toBe(true);
+
+      // Verify revision events exist for both candidates
+      const revEvents = await db.examMarksRevisionEvent.findMany({
+        where: { examId: crossExam.id },
+      });
+      expect(revEvents.length).toBe(2);
+      expect(revEvents.some((e) => e.studentId === student1.id && e.newMarks === 95)).toBe(true);
+      expect(revEvents.some((e) => e.studentId === student2.id && e.newMarks === 80)).toBe(true);
+
+      // Verify audit logs exist for both corrections
+      const auditLogs = await db.auditLog.findMany({
+        where: {
+          tenantId: tenantA.id,
+          action: "exam.published_mark_corrected",
+          entityId: { in: [mark1.id, mark2.id] },
+        },
+      });
+      expect(auditLogs.length).toBe(2);
+    });
+
+    it("8. Rank cascade consistency: Correcting one student's marks flips another student's rank and generates a new snapshot for the affected student, while leaving unaffected students on their previous snapshot", async () => {
+      const membership = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+
+      // Create student 3
+      const student3 = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          admissionNo: `ADM-E3-${Date.now().toString().slice(-5)}`,
+          firstName: "Rohan",
+          lastName: "Verma",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          status: "ACTIVE",
+        },
+      });
+
+      let cascadeExamId = "";
+
+      try {
+        const cascadeExam = await db.examination.create({
+          data: {
+            tenantId: tenantA.id,
+            academicYearId: academicYearA.id,
+            gradeScaleId: gradeScaleA.id,
+            targetType: "CLASS_SECTION",
+            classId: classA.id,
+            title: "Rank Cascade Cascade Verification Exam",
+            code: `CASCADE-${Date.now().toString().slice(-6)}`,
+            examType: "UNIT_TEST",
+            status: "PUBLISHED",
+            isPublished: true,
+            publishedAt: new Date(),
+            startDate: new Date("2026-11-01"),
+            endDate: new Date("2026-11-05"),
+            createdById: membership!.id,
+          },
+        });
+        cascadeExamId = cascadeExam.id;
+        createdExamIds.push(cascadeExam.id);
+
+        const cascadeSub = await db.examSubject.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: cascadeExam.id,
+            subjectId: subjectMath.id,
+            examDate: new Date("2026-11-02"),
+            maxMarks: 100,
+            passingMarks: 35,
+            order: 1,
+          },
+        });
+
+        const e1 = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: cascadeExam.id, studentId: student1.id, status: "ELIGIBLE" },
+        });
+        const e2 = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: cascadeExam.id, studentId: student2.id, status: "ELIGIBLE" },
+        });
+        const e3 = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: cascadeExam.id, studentId: student3.id, status: "ELIGIBLE" },
+        });
+
+        // Initial scores:
+        // Student 3: 90 (Rank 1)
+        // Student 2: 70 (Rank 2)
+        // Student 1: 60 (Rank 3)
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: cascadeExam.id,
+            examSubjectId: cascadeSub.id,
+            studentId: student1.id,
+            enrollmentId: e1.id,
+            marksObtained: 60,
+            evaluationStatus: "VERIFIED",
+            version: 1,
+          },
+        });
+
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: cascadeExam.id,
+            examSubjectId: cascadeSub.id,
+            studentId: student2.id,
+            enrollmentId: e2.id,
+            marksObtained: 70,
+            evaluationStatus: "VERIFIED",
+            version: 1,
+          },
+        });
+
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: cascadeExam.id,
+            examSubjectId: cascadeSub.id,
+            studentId: student3.id,
+            enrollmentId: e3.id,
+            marksObtained: 90,
+            evaluationStatus: "VERIFIED",
+            version: 1,
+          },
+        });
+
+        // Initial publication using calculateAndPublishResultsAction
+        const pubRes = await calculateAndPublishResultsAction({ examId: cascadeExam.id });
+        expect(pubRes.ok).toBe(true);
+
+        const r1 = await db.examResult.findUnique({ where: { examId_studentId: { examId: cascadeExam.id, studentId: student1.id } } });
+        const r2 = await db.examResult.findUnique({ where: { examId_studentId: { examId: cascadeExam.id, studentId: student2.id } } });
+        const r3 = await db.examResult.findUnique({ where: { examId_studentId: { examId: cascadeExam.id, studentId: student3.id } } });
+        expect(r1?.rank).toBe(3);
+        expect(r2?.rank).toBe(2);
+        expect(r3?.rank).toBe(1);
+
+        // Correct ONLY Student 1: from 60 to 75.
+        // This causes Student 1 to move from Rank 3 to Rank 2!
+        // Student 2 moves from Rank 2 to Rank 3! (AFFECTED by rank cascade!)
+        // Student 3 remains at Rank 1 (90 marks)! (UNAFFECTED!)
+        const correctionRes = await correctPublishedMarkAction({
+          examId: cascadeExam.id,
+          examSubjectId: cascadeSub.id,
+          studentId: student1.id,
+          newMark: 75,
+          expectedVersion: 1,
+          reason: "Mark correction moves Candidate 1 above Candidate 2",
+        });
+
+        expect(correctionRes.ok).toBe(true);
+
+        // 1. Verify Student 1 (directly corrected) has snapshot version 2 with rank 2
+        const s1Snapshots = await db.examResultSnapshot.findMany({
+          where: { resultId: r1!.id },
+          orderBy: { version: "asc" },
+        });
+        expect(s1Snapshots.length).toBe(2);
+        expect(s1Snapshots[0].version).toBe(1);
+        expect(s1Snapshots[1].version).toBe(2);
+        type SnapPerf = { totalMarksObtained: number; rank: number; percentage: number; grade: string; resultStatus: string };
+        const getPerf = (snap: { snapshotData: unknown }) => (snap.snapshotData as { performance: SnapPerf }).performance;
+
+        const s1V2Perf = getPerf(s1Snapshots[1]);
+        expect(s1V2Perf.totalMarksObtained).toBe(75);
+        expect(s1V2Perf.rank).toBe(2);
+        expect(verifySnapshotChecksum(s1Snapshots[1].snapshotData, s1Snapshots[1].checksum).isValid).toBe(true);
+
+        // 2. Verify Student 2 (rank cascaded from 2 to 3) has snapshot version 2 with rank 3!
+        const s2Snapshots = await db.examResultSnapshot.findMany({
+          where: { resultId: r2!.id },
+          orderBy: { version: "asc" },
+        });
+        expect(s2Snapshots.length).toBe(2);
+        expect(s2Snapshots[0].version).toBe(1);
+        expect(s2Snapshots[1].version).toBe(2);
+        const s2V2Perf = getPerf(s2Snapshots[1]);
+        expect(s2V2Perf.totalMarksObtained).toBe(70);
+        expect(s2V2Perf.rank).toBe(3);
+        expect(verifySnapshotChecksum(s2Snapshots[1].snapshotData, s2Snapshots[1].checksum).isValid).toBe(true);
+
+        // 3. Verify Student 3 (unaffected at Rank 1) retains ONLY version 1 (NO unnecessary snapshot version 2 created!)
+        const s3Snapshots = await db.examResultSnapshot.findMany({
+          where: { resultId: r3!.id },
+          orderBy: { version: "asc" },
+        });
+        expect(s3Snapshots.length).toBe(1);
+        expect(s3Snapshots[0].version).toBe(1);
+
+        // 4. Verify previous snapshot versions (v1 for all candidates) remain completely unchanged
+        expect(getPerf(s1Snapshots[0]).rank).toBe(3);
+        expect(getPerf(s2Snapshots[0]).rank).toBe(2);
+        expect(getPerf(s3Snapshots[0]).rank).toBe(1);
+
+        // 5. Verify live ExamResult matches latest snapshots for all candidates
+        const liveR1 = await db.examResult.findUnique({ where: { id: r1!.id } });
+        const liveR2 = await db.examResult.findUnique({ where: { id: r2!.id } });
+        const liveR3 = await db.examResult.findUnique({ where: { id: r3!.id } });
+
+        expect(liveR1?.rank).toBe(s1V2Perf.rank);
+        expect(liveR1?.totalMarksObtained).toBe(s1V2Perf.totalMarksObtained);
+        expect(liveR2?.rank).toBe(s2V2Perf.rank);
+        expect(liveR2?.totalMarksObtained).toBe(s2V2Perf.totalMarksObtained);
+        expect(liveR3?.rank).toBe(1);
+      } finally {
+        if (cascadeExamId) {
+          await db.$executeRawUnsafe(`ALTER TABLE "ExamResultSnapshot" DISABLE TRIGGER trg_exam_snapshot_protect`);
+          await db.$executeRawUnsafe(`ALTER TABLE "ExamMarksRevisionEvent" DISABLE TRIGGER trg_exam_revision_event_protect`);
+          await db.examResultSnapshot.deleteMany({ where: { examId: cascadeExamId } });
+          await db.examMarksRevisionEvent.deleteMany({ where: { examId: cascadeExamId } });
+          await db.examResult.deleteMany({ where: { examId: cascadeExamId } });
+          await db.examMark.deleteMany({ where: { examId: cascadeExamId } });
+          await db.examEnrollment.deleteMany({ where: { examId: cascadeExamId } });
+          await db.examSubject.deleteMany({ where: { examId: cascadeExamId } });
+          await db.examination.deleteMany({ where: { id: cascadeExamId } });
+          await db.$executeRawUnsafe(`ALTER TABLE "ExamResultSnapshot" ENABLE TRIGGER trg_exam_snapshot_protect`);
+          await db.$executeRawUnsafe(`ALTER TABLE "ExamMarksRevisionEvent" ENABLE TRIGGER trg_exam_revision_event_protect`);
+        }
+        await db.student.delete({ where: { id: student3.id } }).catch(() => {});
+      }
+    });
+
+    it("9. Negative authorization & tenant isolation: Rejects unauthorized roles and cross-tenant access without mutating state", async () => {
+      const membership = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const adminUserId = membership?.userId || "user-admin-default";
+
+      const authorizedCtx = {
+        tenant: { id: tenantA.id, name: tenantA.name } as unknown as TenantContext["tenant"],
+        user: { id: adminUserId, name: "Admin Officer" } as unknown as TenantContext["user"],
+        membership: { roleKey: "ADMIN" } as unknown as TenantContext["membership"],
+        permissions: new Set(["tenant.exams.correct_published_marks"]),
+        subscriptionBlocked: false,
+        isOwnerView: true,
+      };
+
+      try {
+        // A. Denied caller (e.g. Teacher or Accountant without correct_published_marks permission)
+        vi.mocked(authorizeTenantWrite).mockResolvedValueOnce({
+          ok: false,
+          error: "Forbidden: Missing permission tenant.exams.correct_published_marks",
+        });
+
+        const deniedRes = await correctPublishedMarkAction({
+          examId: testExam.id,
+          examSubjectId: subMath.id,
+          studentId: student1.id,
+          newMark: 95,
+          expectedVersion: 1,
+          reason: "Unauthorized attempt by teacher without correction privilege",
+        });
+
+        expect(deniedRes.ok).toBe(false);
+        expect(deniedRes.error).toContain("Forbidden: Missing permission tenant.exams.correct_published_marks");
+
+        // B. Cross-tenant isolation check: Tenant B principal attempting to modify Tenant A's examination
+        vi.mocked(authorizeTenantWrite).mockResolvedValueOnce({
+          ok: true,
+          ctx: {
+            tenant: { id: tenantB.id, name: tenantB.name } as unknown as TenantContext["tenant"],
+            user: { id: "user-tenant-b", name: "Tenant B Admin" } as unknown as TenantContext["user"],
+            membership: { roleKey: "ADMIN" } as unknown as TenantContext["membership"],
+            permissions: new Set(["tenant.exams.correct_published_marks"]),
+            subscriptionBlocked: false,
+            isOwnerView: true,
+          },
+        });
+
+        const crossTenantRes = await correctPublishedMarkAction({
+          examId: testExam.id, // Exam belongs to Tenant A
+          examSubjectId: subMath.id,
+          studentId: student1.id,
+          newMark: 95,
+          expectedVersion: 1,
+          reason: "Cross-tenant intrusion attempt",
+        });
+
+        expect(crossTenantRes.ok).toBe(false);
+        expect(crossTenantRes.error).toBe("Examination not found.");
+      } finally {
+        // Restore authorized context
+        vi.mocked(authorizeTenantWrite).mockResolvedValue({
+          ok: true,
+          ctx: authorizedCtx,
+        });
+      }
+    });
+
+    it("10. Snapshot semantic completeness: Every newly created snapshot payload reflects the complete authoritative published report card", async () => {
+      const latestSnapshot = await db.examResultSnapshot.findFirst({
+        where: { resultId: testResult.id },
+        orderBy: { version: "desc" },
+      });
+
+      expect(latestSnapshot).not.toBeNull();
+      const payload = latestSnapshot!.snapshotData as Record<string, unknown>;
+
+      // 1. Verify institute & exam identity
+      expect((payload.institute as Record<string, unknown>).id).toBe(tenantA.id);
+      expect((payload.exam as Record<string, unknown>).id).toBe(testExam.id);
+
+      // 2. Verify candidate identity
+      const studentData = payload.student as Record<string, unknown>;
+      expect(studentData.id).toBe(student1.id);
+      expect(studentData.admissionNo).toBeDefined();
+
+      // 3. Verify performance fields (Total marks, percentage, rank, grade, outcome)
+      const perf = payload.performance as Record<string, unknown>;
+      expect(typeof perf.totalMarksObtained).toBe("number");
+      expect(typeof perf.totalMaxMarks).toBe("number");
+      expect(typeof perf.percentage).toBe("number");
+      expect(typeof perf.grade).toBe("string");
+      expect(typeof perf.gradePoint).toBe("number");
+      expect(["PASS", "FAIL", "WITHHELD", "EXPELLED"]).toContain(perf.resultStatus);
+      expect(perf.passedSubjectsCount).toBeDefined();
+      expect(perf.failedSubjectsCount).toBeDefined();
+
+      // 4. Verify subject-level breakdown
+      const subjects = payload.subjects as Array<Record<string, unknown>>;
+      expect(Array.isArray(subjects)).toBe(true);
+      expect(subjects.length).toBeGreaterThanOrEqual(1);
+      for (const sub of subjects) {
+        expect(sub.subjectId).toBeDefined();
+        expect(sub.subjectName).toBeDefined();
+        expect(typeof sub.maxMarks).toBe("number");
+        expect(typeof sub.passingMarks).toBe("number");
+        expect(typeof sub.isPassed).toBe("boolean");
+      }
+
+      // 5. Verify authoritative SHA-256 checksum matches
+      const checksumVerification = verifySnapshotChecksum(latestSnapshot!.snapshotData, latestSnapshot!.checksum);
+      expect(checksumVerification.isValid).toBe(true);
     });
   });
 });

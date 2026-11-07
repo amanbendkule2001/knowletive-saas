@@ -35,7 +35,7 @@ export default async function PortalResultDetailPage({
         },
       },
       snapshots: {
-        orderBy: { generatedAt: "desc" },
+        orderBy: { version: "desc" },
         take: 1,
       },
     },
@@ -202,7 +202,7 @@ export default async function PortalResultDetailPage({
           <div className="mt-6 p-4 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-medium text-foreground flex items-center gap-1.5">
-                <CheckCircle2 className="size-4 text-emerald-500" /> Immutable Assessment Snapshot
+                <CheckCircle2 className="size-4 text-emerald-500" /> Immutable Assessment Snapshot (v{latestSnapshot.version})
               </span>
               <span className="text-muted text-[11px]">
                 Generated {new Date(latestSnapshot.generatedAt).toLocaleString()}

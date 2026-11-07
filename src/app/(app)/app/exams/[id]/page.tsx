@@ -29,6 +29,8 @@ import {
   StudentReportCardModal,
   DeleteExamButton,
   ExportResultsCsvButton,
+  CorrectPublishedMarkModal,
+  CandidateSubjectMark,
 } from "@/components/exams/exam-client-bits";
 import type { ExamStatus } from "@prisma/client";
 
@@ -67,6 +69,7 @@ export default async function ExamStudioPage({
   const canWrite = hasTenantPermission(ctx, "tenant.exams.write");
   const canVerifyMarks = hasTenantPermission(ctx, "tenant.exams.verify_marks");
   const canPublish = hasTenantPermission(ctx, "tenant.exams.publish_results");
+  const canCorrectMarks = hasTenantPermission(ctx, "tenant.exams.correct_published_marks");
 
   const [exam, availableSubjects] = await Promise.all([
     db.examination.findFirst({
@@ -100,7 +103,7 @@ export default async function ExamStudioPage({
             marks: true,
             result: {
               include: {
-                snapshots: true,
+                snapshots: { orderBy: { version: "desc" } },
               },
             },
           },
@@ -112,7 +115,7 @@ export default async function ExamStudioPage({
         results: {
           include: {
             student: true,
-            snapshots: true,
+            snapshots: { orderBy: { version: "desc" } },
           },
           orderBy: [{ rank: "asc" }, { percentage: "desc" }],
         },
@@ -594,12 +597,27 @@ export default async function ExamStudioPage({
                     <th className="text-center">Grade</th>
                     <th className="text-center">Points</th>
                     <th className="text-center">Result</th>
-                    <th className="text-right">Report Card</th>
+                    <th className="text-right">Report Card & Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                   {exam.results.map((res) => {
                     const snapshot = res.snapshots[0];
+                    const enrollment = exam.enrollments.find((e) => e.studentId === res.studentId);
+                    const candidateMarks: CandidateSubjectMark[] = exam.subjects.map((es) => {
+                      const mark = enrollment?.marks.find((m) => m.examSubjectId === es.id);
+                      return {
+                        examSubjectId: es.id,
+                        subjectName: es.subject.name,
+                        subjectCode: es.subject.code,
+                        maxMarks: es.maxMarks,
+                        currentMarks: mark?.marksObtained ?? null,
+                        isAbsent: mark?.isAbsent ?? false,
+                        isExempted: mark?.isExempted ?? false,
+                        version: mark?.version ?? 1,
+                      };
+                    });
+
                     return (
                       <tr key={res.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/30">
                         <td className="text-center font-bold text-sm text-indigo-600 dark:text-indigo-400">
@@ -627,14 +645,25 @@ export default async function ExamStudioPage({
                           </span>
                         </td>
                         <td className="text-right">
-                          {snapshot ? (
-                            <StudentReportCardModal
-                              snapshot={snapshot.snapshotData as unknown as Parameters<typeof StudentReportCardModal>[0]["snapshot"]}
-                              checksum={snapshot.checksum}
-                            />
-                          ) : (
-                            <span className="text-zinc-400 text-[11px]">Unpublished</span>
-                          )}
+                          <div className="flex items-center justify-end gap-1.5">
+                            {snapshot ? (
+                              <StudentReportCardModal
+                                snapshot={snapshot.snapshotData as unknown as Parameters<typeof StudentReportCardModal>[0]["snapshot"]}
+                                checksum={snapshot.checksum}
+                              />
+                            ) : (
+                              <span className="text-zinc-400 text-[11px]">Unpublished</span>
+                            )}
+                            {canCorrectMarks && exam.isPublished && (
+                              <CorrectPublishedMarkModal
+                                examId={exam.id}
+                                studentId={res.studentId}
+                                studentName={`${res.student.firstName} ${res.student.lastName}`.trim()}
+                                admissionNo={res.student.admissionNo}
+                                subjects={candidateMarks}
+                              />
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );

@@ -285,6 +285,7 @@ export const correctPublishedMarkSchema = z.object({
   examSubjectId: z.string().min(1, "Subject assessment ID is required"),
   studentId: z.string().min(1, "Student ID is required"),
   newMark: z.coerce.number().min(0, "Marks must be >= 0").max(1000, "Marks cannot exceed 1000"),
+  expectedVersion: z.coerce.number().int().min(1, "Expected mark version must be an integer >= 1"),
   reason: z
     .string()
     .trim()

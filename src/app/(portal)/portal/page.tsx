@@ -117,7 +117,7 @@ export default async function PortalPage() {
               },
             },
             snapshots: {
-              orderBy: { generatedAt: "desc" },
+              orderBy: { version: "desc" },
               take: 1,
             },
           },

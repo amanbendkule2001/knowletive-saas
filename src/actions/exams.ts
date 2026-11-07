@@ -1,6 +1,5 @@
 "use server";
 
-import crypto from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { authorizeTenantWrite } from "@/lib/rbac";
@@ -17,7 +16,11 @@ import {
   publishResultsSchema,
   correctPublishedMarkSchema,
 } from "@/lib/exams-schema";
-import { computeSnapshotChecksum, verifySnapshotChecksum } from "@/lib/exam-snapshot";
+import {
+  canonicalStringify,
+  computeSnapshotChecksum,
+  verifySnapshotChecksum,
+} from "@/lib/exam-snapshot";
 import type {
   ExamStatus,
   ExamTargetType,
@@ -30,6 +33,7 @@ import type {
 export type ActionResult<T = unknown> = {
   ok: boolean;
   error?: string;
+  code?: string;
   data?: T;
 };
 
@@ -1084,9 +1088,14 @@ export async function calculateAndPublishResultsAction(input: unknown): Promise<
 
       const checksum = computeSnapshotChecksum(snapshotPayload);
 
-      // Check if snapshot exists
+      // Check if initial snapshot (version 1) exists
       const existingSnapshot = await tx.examResultSnapshot.findUnique({
-        where: { resultId: result.id },
+        where: {
+          resultId_version: {
+            resultId: result.id,
+            version: 1,
+          },
+        },
       });
 
       if (!existingSnapshot) {
@@ -1096,6 +1105,7 @@ export async function calculateAndPublishResultsAction(input: unknown): Promise<
             examId,
             studentId: student.studentId,
             resultId: result.id,
+            version: 1,
             snapshotData: snapshotPayload as unknown as Prisma.InputJsonValue,
             checksum,
             generatedAt: publishedAt,
@@ -1142,7 +1152,7 @@ export async function correctPublishedMarkAction(
     return { ok: false, error: parsed.error.issues[0]?.message || "Validation failed" };
   }
 
-  const { examId, examSubjectId, studentId, newMark, reason } = parsed.data;
+  const { examId, examSubjectId, studentId, newMark, reason, expectedVersion } = parsed.data;
 
   const exam = await db.examination.findFirst({
     where: { id: examId, tenantId: ctx.tenant.id },
@@ -1196,235 +1206,275 @@ export async function correctPublishedMarkAction(
     return { ok: false, error: "Mark record not found for this candidate and subject." };
   }
 
+  // Pre-check expectedVersion before entering transaction
+  if (existingMark.version !== expectedVersion) {
+    return {
+      ok: false,
+      error: "The mark has been modified by another process. Please refresh and try again.",
+      code: "STALE_VERSION",
+    };
+  }
+
   const membership = await db.membership.findFirst({
     where: { userId: ctx.user.id, tenantId: ctx.tenant.id },
   });
   const membershipId = membership?.id || null;
 
-  await db.$transaction(async (tx) => {
-    // 1. Create immutable audit revision event
-    await tx.examMarksRevisionEvent.create({
-      data: {
-        tenantId: ctx.tenant.id,
-        examId,
-        examSubjectId,
-        studentId,
-        markId: existingMark.id,
-        actorId: ctx.user.id,
-        actorName: ctx.user.name,
-        oldMarks: existingMark.marksObtained,
-        newMarks: newMark,
-        oldStatus: existingMark.evaluationStatus,
-        newStatus: "VERIFIED",
-        reason: `[PUBLISHED CORRECTION] ${reason}`,
-      },
-    });
+  try {
+    await db.$transaction(async (tx) => {
+      // 1. Examination-level row lock: serializes recalculations and ranking updates across all candidates in this exam
+      const lockedExam = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM "Examination"
+        WHERE id = ${examId} AND "tenantId" = ${ctx.tenant.id}
+        FOR UPDATE
+      `;
 
-    // 2. Update ExamMark with incremented version
-    await tx.examMark.update({
-      where: { id: existingMark.id },
-      data: {
-        marksObtained: newMark,
-        isAbsent: false,
-        isExempted: false,
-        evaluationStatus: "VERIFIED",
-        version: { increment: 1 },
-      },
-    });
+      if (lockedExam.length === 0) {
+        throw new Error("EXAM_NOT_FOUND");
+      }
 
-    // 3. Recalculate all students' results and ranks
-    const totalMaxMarks = exam.subjects.reduce((sum, s) => sum + s.maxMarks * s.weightage, 0);
+      // 2. Candidate-level row lock on ExamResult: preserves canonical locking order (Examination -> ExamResult)
+      const lockedResults = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM "ExamResult"
+        WHERE "examId" = ${examId} AND "studentId" = ${studentId} AND "tenantId" = ${ctx.tenant.id}
+        FOR UPDATE
+      `;
 
-    const allMarks = await tx.examMark.findMany({
-      where: { examId, tenantId: ctx.tenant.id },
-    });
+      if (lockedResults.length === 0) {
+        throw new Error("RESULT_NOT_FOUND");
+      }
 
-    type StudentCalc = {
-      enrollmentId: string;
-      studentId: string;
-      studentName: string;
-      admissionNo: string;
-      rollNumber: string | null;
-      totalMarksObtained: number;
-      percentage: number;
-      passedSubjectsCount: number;
-      failedSubjectsCount: number;
-      resultStatus: ExamResultStatus;
-      grade: string;
-      gradePoint: number;
-      remarks: string | null;
-      subjectBreakdown: Array<{
-        subjectId: string;
-        subjectName: string;
-        subjectCode: string | null;
-        maxMarks: number;
-        passingMarks: number;
-        marksObtained: number | null;
-        isAbsent: boolean;
-        isExempted: boolean;
-        isPassed: boolean;
-      }>;
-    };
+      // 3. Atomic optimistic check and version increment on ExamMark
+      const markUpdate = await tx.examMark.updateMany({
+        where: {
+          id: existingMark.id,
+          version: expectedVersion,
+        },
+        data: {
+          marksObtained: newMark,
+          isAbsent: false,
+          isExempted: false,
+          evaluationStatus: "VERIFIED",
+          version: { increment: 1 },
+        },
+      });
 
-    const studentCalcs: StudentCalc[] = [];
+      if (markUpdate.count === 0) {
+        throw new Error("STALE_VERSION");
+      }
 
-    for (const enrollment of exam.enrollments) {
-      if (enrollment.status === "WITHDRAWN") continue;
+      // 4. Create immutable audit revision event within the active transaction
+      await tx.examMarksRevisionEvent.create({
+        data: {
+          tenantId: ctx.tenant.id,
+          examId,
+          examSubjectId,
+          studentId,
+          markId: existingMark.id,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name,
+          oldMarks: existingMark.marksObtained,
+          newMarks: newMark,
+          oldStatus: existingMark.evaluationStatus,
+          newStatus: "VERIFIED",
+          reason: `[PUBLISHED CORRECTION] ${reason}`,
+        },
+      });
 
-      const isCandidateExempted = enrollment.status === "EXEMPTED";
-      const studentMarks = allMarks.filter((m) => m.studentId === enrollment.studentId);
-      const isCandidateAbsent =
-        enrollment.status === "ABSENT" ||
-        (studentMarks.length > 0 && studentMarks.every((m) => m.isAbsent));
+      // 5. Recalculate all students' results and ranks with latest marks from tx
+      const totalMaxMarks = exam.subjects.reduce((sum, s) => sum + s.maxMarks * s.weightage, 0);
 
-      let studentObtained = 0;
-      let passedSubjects = 0;
-      let failedSubjects = 0;
+      const allMarks = await tx.examMark.findMany({
+        where: { examId, tenantId: ctx.tenant.id },
+      });
 
-      const breakdown = exam.subjects.map((es) => {
-        const mark = studentMarks.find((m) => m.examSubjectId === es.id);
-        const marksObtained = mark?.marksObtained ?? null;
-        const isAbsent = isCandidateAbsent || (mark?.isAbsent ?? false);
-        const isExempted = isCandidateExempted || (mark?.isExempted ?? false);
+      type StudentCalc = {
+        enrollmentId: string;
+        studentId: string;
+        studentName: string;
+        admissionNo: string;
+        rollNumber: string | null;
+        totalMarksObtained: number;
+        percentage: number;
+        passedSubjectsCount: number;
+        failedSubjectsCount: number;
+        resultStatus: ExamResultStatus;
+        grade: string;
+        gradePoint: number;
+        remarks: string | null;
+        subjectBreakdown: Array<{
+          subjectId: string;
+          subjectName: string;
+          subjectCode: string | null;
+          maxMarks: number;
+          passingMarks: number;
+          marksObtained: number | null;
+          isAbsent: boolean;
+          isExempted: boolean;
+          isPassed: boolean;
+        }>;
+      };
 
-        const numericMark = isAbsent || isExempted || marksObtained === null ? 0 : marksObtained;
-        studentObtained += numericMark * es.weightage;
+      const studentCalcs: StudentCalc[] = [];
 
-        const isPassed = !isAbsent && (isExempted || (marksObtained !== null && marksObtained >= es.passingMarks));
-        if (isPassed) {
-          passedSubjects++;
+      for (const enrollment of exam.enrollments) {
+        if (enrollment.status === "WITHDRAWN") continue;
+
+        const isCandidateExempted = enrollment.status === "EXEMPTED";
+        const studentMarks = allMarks.filter((m) => m.studentId === enrollment.studentId);
+        const isCandidateAbsent =
+          enrollment.status === "ABSENT" ||
+          (studentMarks.length > 0 && studentMarks.every((m) => m.isAbsent));
+
+        let studentObtained = 0;
+        let passedSubjects = 0;
+        let failedSubjects = 0;
+
+        const breakdown = exam.subjects.map((es) => {
+          const mark = studentMarks.find((m) => m.examSubjectId === es.id);
+          const marksObtained = mark?.marksObtained ?? null;
+          const isAbsent = isCandidateAbsent || (mark?.isAbsent ?? false);
+          const isExempted = isCandidateExempted || (mark?.isExempted ?? false);
+
+          const numericMark = isAbsent || isExempted || marksObtained === null ? 0 : marksObtained;
+          studentObtained += numericMark * es.weightage;
+
+          const isPassed = !isAbsent && (isExempted || (marksObtained !== null && marksObtained >= es.passingMarks));
+          if (isPassed) {
+            passedSubjects++;
+          } else {
+            failedSubjects++;
+          }
+
+          return {
+            subjectId: es.subjectId,
+            subjectName: es.subject.name,
+            subjectCode: es.subject.code,
+            maxMarks: es.maxMarks,
+            passingMarks: es.passingMarks,
+            marksObtained,
+            isAbsent,
+            isExempted,
+            isPassed,
+          };
+        });
+
+        let percentage = 0;
+        let grade = "N/A";
+        let gradePoint = 0;
+        let resultStatus: ExamResultStatus = "PASS";
+        let remarks: string | null = null;
+
+        if (isCandidateExempted) {
+          resultStatus = "WITHHELD";
+          grade = "EXM";
+          remarks = "Candidate exempted from assessment";
+        } else if (isCandidateAbsent) {
+          resultStatus = "FAIL";
+          percentage = 0;
+          remarks = "Candidate absent in all assessments";
+          const lowestBand = exam.gradeScale.bands[exam.gradeScale.bands.length - 1];
+          if (lowestBand) {
+            grade = lowestBand.letterGrade;
+            gradePoint = lowestBand.gradePoint;
+          }
         } else {
-          failedSubjects++;
+          const rawPercentage = totalMaxMarks > 0 ? (studentObtained / totalMaxMarks) * 100 : 0;
+          percentage = Math.round((rawPercentage + Number.EPSILON) * 100) / 100;
+
+          let matchedBand = exam.gradeScale.bands.find(
+            (b) => percentage >= b.minPercentage && percentage <= b.maxPercentage
+          );
+          if (!matchedBand && exam.gradeScale.bands.length > 0) {
+            matchedBand =
+              percentage > 100
+                ? exam.gradeScale.bands[0]
+                : exam.gradeScale.bands[exam.gradeScale.bands.length - 1];
+          }
+
+          grade = matchedBand ? matchedBand.letterGrade : "N/A";
+          gradePoint = matchedBand ? matchedBand.gradePoint : 0;
+          resultStatus = failedSubjects === 0 ? "PASS" : "FAIL";
         }
 
+        studentCalcs.push({
+          enrollmentId: enrollment.id,
+          studentId: enrollment.student.id,
+          studentName: `${enrollment.student.firstName} ${enrollment.student.lastName}`.trim(),
+          admissionNo: enrollment.student.admissionNo,
+          rollNumber: enrollment.rollNumber,
+          totalMarksObtained: Math.round(studentObtained * 100) / 100,
+          percentage,
+          passedSubjectsCount: passedSubjects,
+          failedSubjectsCount: failedSubjects,
+          resultStatus,
+          grade,
+          gradePoint,
+          remarks,
+          subjectBreakdown: breakdown,
+        });
+      }
+
+      studentCalcs.sort((a, b) => b.totalMarksObtained - a.totalMarksObtained);
+
+      let currentRank = 1;
+      const rankedStudents = studentCalcs.map((sc, idx) => {
+        if (idx > 0 && sc.totalMarksObtained < studentCalcs[idx - 1].totalMarksObtained) {
+          currentRank = idx + 1;
+        }
         return {
-          subjectId: es.subjectId,
-          subjectName: es.subject.name,
-          subjectCode: es.subject.code,
-          maxMarks: es.maxMarks,
-          passingMarks: es.passingMarks,
-          marksObtained,
-          isAbsent,
-          isExempted,
-          isPassed,
+          ...sc,
+          rank: sc.resultStatus === "PASS" ? currentRank : null,
         };
       });
 
-      let percentage = 0;
-      let grade = "N/A";
-      let gradePoint = 0;
-      let resultStatus: ExamResultStatus = "PASS";
-      let remarks: string | null = null;
+      const now = new Date();
 
-      if (isCandidateExempted) {
-        resultStatus = "WITHHELD";
-        grade = "EXM";
-        remarks = "Candidate exempted from assessment";
-      } else if (isCandidateAbsent) {
-        resultStatus = "FAIL";
-        percentage = 0;
-        remarks = "Candidate absent in all assessments";
-        const lowestBand = exam.gradeScale.bands[exam.gradeScale.bands.length - 1];
-        if (lowestBand) {
-          grade = lowestBand.letterGrade;
-          gradePoint = lowestBand.gradePoint;
-        }
-      } else {
-        const rawPercentage = totalMaxMarks > 0 ? (studentObtained / totalMaxMarks) * 100 : 0;
-        percentage = Math.round((rawPercentage + Number.EPSILON) * 100) / 100;
-
-        let matchedBand = exam.gradeScale.bands.find(
-          (b) => percentage >= b.minPercentage && percentage <= b.maxPercentage
-        );
-        if (!matchedBand && exam.gradeScale.bands.length > 0) {
-          matchedBand =
-            percentage > 100
-              ? exam.gradeScale.bands[0]
-              : exam.gradeScale.bands[exam.gradeScale.bands.length - 1];
-        }
-
-        grade = matchedBand ? matchedBand.letterGrade : "N/A";
-        gradePoint = matchedBand ? matchedBand.gradePoint : 0;
-        resultStatus = failedSubjects === 0 ? "PASS" : "FAIL";
-      }
-
-      studentCalcs.push({
-        enrollmentId: enrollment.id,
-        studentId: enrollment.student.id,
-        studentName: `${enrollment.student.firstName} ${enrollment.student.lastName}`.trim(),
-        admissionNo: enrollment.student.admissionNo,
-        rollNumber: enrollment.rollNumber,
-        totalMarksObtained: Math.round(studentObtained * 100) / 100,
-        percentage,
-        passedSubjectsCount: passedSubjects,
-        failedSubjectsCount: failedSubjects,
-        resultStatus,
-        grade,
-        gradePoint,
-        remarks,
-        subjectBreakdown: breakdown,
-      });
-    }
-
-    studentCalcs.sort((a, b) => b.totalMarksObtained - a.totalMarksObtained);
-
-    let currentRank = 1;
-    const rankedStudents = studentCalcs.map((sc, idx) => {
-      if (idx > 0 && sc.totalMarksObtained < studentCalcs[idx - 1].totalMarksObtained) {
-        currentRank = idx + 1;
-      }
-      return {
-        ...sc,
-        rank: sc.resultStatus === "PASS" ? currentRank : null,
-      };
-    });
-
-    const now = new Date();
-
-    for (const student of rankedStudents) {
-      const result = await tx.examResult.upsert({
-        where: {
-          examId_studentId: {
+      for (const student of rankedStudents) {
+        const result = await tx.examResult.upsert({
+          where: {
+            examId_studentId: {
+              examId,
+              studentId: student.studentId,
+            },
+          },
+          create: {
+            tenantId: ctx.tenant.id,
             examId,
             studentId: student.studentId,
+            enrollmentId: student.enrollmentId,
+            totalMaxMarks,
+            totalMarksObtained: student.totalMarksObtained,
+            percentage: student.percentage,
+            grade: student.grade,
+            gradePoint: student.gradePoint,
+            rank: student.rank,
+            processingStatus: "PUBLISHED",
+            resultStatus: student.resultStatus,
+            passedSubjectsCount: student.passedSubjectsCount,
+            failedSubjectsCount: student.failedSubjectsCount,
+            remarks: student.remarks,
+            publishedAt: now,
+            publishedById: membershipId,
           },
-        },
-        create: {
-          tenantId: ctx.tenant.id,
-          examId,
-          studentId: student.studentId,
-          enrollmentId: student.enrollmentId,
-          totalMaxMarks,
-          totalMarksObtained: student.totalMarksObtained,
-          percentage: student.percentage,
-          grade: student.grade,
-          gradePoint: student.gradePoint,
-          rank: student.rank,
-          processingStatus: "PUBLISHED",
-          resultStatus: student.resultStatus,
-          passedSubjectsCount: student.passedSubjectsCount,
-          failedSubjectsCount: student.failedSubjectsCount,
-          remarks: student.remarks,
-          publishedAt: now,
-          publishedById: membershipId,
-        },
-        update: {
-          totalMaxMarks,
-          totalMarksObtained: student.totalMarksObtained,
-          percentage: student.percentage,
-          grade: student.grade,
-          gradePoint: student.gradePoint,
-          rank: student.rank,
-          processingStatus: "PUBLISHED",
-          resultStatus: student.resultStatus,
-          passedSubjectsCount: student.passedSubjectsCount,
-          failedSubjectsCount: student.failedSubjectsCount,
-          remarks: student.remarks,
-        },
-      });
+          update: {
+            totalMaxMarks,
+            totalMarksObtained: student.totalMarksObtained,
+            percentage: student.percentage,
+            grade: student.grade,
+            gradePoint: student.gradePoint,
+            rank: student.rank,
+            processingStatus: "PUBLISHED",
+            resultStatus: student.resultStatus,
+            passedSubjectsCount: student.passedSubjectsCount,
+            failedSubjectsCount: student.failedSubjectsCount,
+            remarks: student.remarks,
+          },
+        });
 
-      if (student.studentId === studentId) {
-        const snapshotPayload = {
+        // Objective A: Rank cascade snapshot consistency & semantic business payload parity
+        // Construct canonical business payload representing complete authoritative report card
+        const canonicalBusinessPayload = {
           institute: {
             id: ctx.tenant.id,
             name: ctx.tenant.name,
@@ -1454,47 +1504,125 @@ export async function correctPublishedMarkAction(
             failedSubjectsCount: student.failedSubjectsCount,
           },
           subjects: student.subjectBreakdown,
-          metadata: {
-            publishedAt: now.toISOString(),
-            publishedBy: ctx.user.name,
-            correctionReason: reason,
-          },
         };
 
-        const checksum = computeSnapshotChecksum(snapshotPayload);
-
-        await tx.examResultSnapshot.create({
-          data: {
-            tenantId: ctx.tenant.id,
-            examId,
-            studentId: student.studentId,
-            resultId: result.id,
-            snapshotData: snapshotPayload as unknown as Prisma.InputJsonValue,
-            checksum,
-            generatedAt: now,
-          },
+        const latestSnapshot = await tx.examResultSnapshot.findFirst({
+          where: { resultId: result.id },
+          orderBy: { version: "desc" },
         });
+
+        const storedData = latestSnapshot?.snapshotData as Record<string, unknown> | undefined;
+        const storedBusinessPayload = storedData
+          ? {
+              institute: storedData.institute,
+              exam: storedData.exam,
+              student: storedData.student,
+              performance: storedData.performance,
+              subjects: storedData.subjects,
+            }
+          : null;
+
+        const isDirectCorrection = student.studentId === studentId;
+        const businessPayloadChanged =
+          !storedBusinessPayload ||
+          canonicalStringify(canonicalBusinessPayload) !== canonicalStringify(storedBusinessPayload);
+
+        // Directly corrected candidate always receives an immutable version for auditability.
+        // Cohort peers receive a new immutable version ONLY if their business payload semantically changed.
+        const shouldCreateSnapshot = isDirectCorrection || businessPayloadChanged;
+
+        if (shouldCreateSnapshot) {
+          const snapshotPayload = {
+            ...canonicalBusinessPayload,
+            metadata: {
+              publishedAt: now.toISOString(),
+              publishedBy: ctx.user.name,
+              correctionReason: isDirectCorrection
+                ? reason
+                : `Institutional rank recalculation resulting from mark correction for candidate ${studentId}`,
+            },
+          };
+
+          const checksum = computeSnapshotChecksum(snapshotPayload);
+          const nextVersion = (latestSnapshot?.version ?? 0) + 1;
+
+          await tx.examResultSnapshot.create({
+            data: {
+              tenantId: ctx.tenant.id,
+              examId,
+              studentId: student.studentId,
+              resultId: result.id,
+              version: nextVersion,
+              snapshotData: snapshotPayload as unknown as Prisma.InputJsonValue,
+              checksum,
+              generatedAt: now,
+            },
+          });
+        }
+      }
+
+      // 6. Audit logging joins the active transaction atomically via tx
+      await writeAudit(
+        {
+          tenantId: ctx.tenant.id,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name,
+          action: "exam.published_mark_corrected",
+          entity: "ExamMark",
+          entityId: existingMark.id,
+          meta: {
+            examId,
+            examSubjectId,
+            studentId,
+            oldMarks: existingMark.marksObtained,
+            newMark,
+            expectedVersion,
+            reason,
+          },
+        },
+        tx
+      );
+    });
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      if (err.message === "STALE_VERSION") {
+        return {
+          ok: false,
+          error: "The mark has been modified by another process. Please refresh and try again.",
+          code: "STALE_VERSION",
+        };
+      }
+      if (err.message === "RESULT_NOT_FOUND") {
+        return {
+          ok: false,
+          error: "Published result record not found for this candidate.",
+          code: "RESULT_NOT_FOUND",
+        };
+      }
+      if (err.message === "EXAM_NOT_FOUND") {
+        return {
+          ok: false,
+          error: "Examination not found or inaccessible.",
+          code: "EXAM_NOT_FOUND",
+        };
       }
     }
-  });
+    // Handle Prisma duplicate key violation (e.g. concurrent snapshot conflict)
+    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "P2002") {
+      return {
+        ok: false,
+        error: "A concurrent snapshot conflict occurred. Please refresh and try again.",
+        code: "CONCURRENT_SNAPSHOT_COLLISION",
+      };
+    }
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Failed to correct published mark.",
+    };
+  }
 
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "exam.published_mark_corrected",
-    entity: "ExamMark",
-    entityId: existingMark.id,
-    meta: {
-      examId,
-      examSubjectId,
-      studentId,
-      oldMarks: existingMark.marksObtained,
-      newMark,
-      reason,
-    },
-  });
-
+  // Operations intentionally executed outside the transaction:
+  // Next.js cache revalidations must only run AFTER successful database commit
   revalidatePath(`/app/exams/${examId}`);
   revalidatePath("/app/exams");
   revalidatePath("/portal");

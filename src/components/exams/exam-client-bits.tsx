@@ -9,10 +9,12 @@ import {
   Calendar,
   CheckCircle2,
   Download,
+  Edit3,
   FileCheck,
   FileText,
   Plus,
   Printer,
+  RefreshCw,
   Save,
   Send,
   ShieldCheck,
@@ -26,6 +28,7 @@ import {
   enterMarksBulkAction,
   verifyExamSubjectMarksAction,
   calculateAndPublishResultsAction,
+  correctPublishedMarkAction,
   deleteExaminationAction,
   exportExamResultsCsvAction,
 } from "@/actions/exams";
@@ -1094,5 +1097,271 @@ export function ExportResultsCsvButton({
       <Download className="h-4 w-4" />
       {loading ? "Exporting..." : "Export CSV"}
     </button>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// 8. CORRECT PUBLISHED MARK MODAL
+// ─────────────────────────────────────────────────────────────
+
+export type CandidateSubjectMark = {
+  examSubjectId: string;
+  subjectName: string;
+  subjectCode: string | null;
+  maxMarks: number;
+  currentMarks: number | null;
+  isAbsent: boolean;
+  isExempted: boolean;
+  version: number;
+};
+
+export function CorrectPublishedMarkModal({
+  examId,
+  studentId,
+  studentName,
+  admissionNo,
+  subjects,
+}: {
+  examId: string;
+  studentId: string;
+  studentName: string;
+  admissionNo: string;
+  subjects: CandidateSubjectMark[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [selectedSubjectId, setSelectedSubjectId] = useState(subjects[0]?.examSubjectId || "");
+  const [newMark, setNewMark] = useState<string>("");
+  const [reason, setReason] = useState("");
+  const [isPending, startTransition] = useTransition();
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isStale, setIsStale] = useState(false);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const router = useRouter();
+
+  const currentSubject = subjects.find((s) => s.examSubjectId === selectedSubjectId) || subjects[0];
+
+  const handleOpen = () => {
+    setErrorMsg(null);
+    setIsStale(false);
+    setSuccessMsg(null);
+    setSelectedSubjectId(subjects[0]?.examSubjectId || "");
+    setNewMark(subjects[0]?.currentMarks !== null && subjects[0]?.currentMarks !== undefined ? String(subjects[0]?.currentMarks) : "");
+    setReason("");
+    setOpen(true);
+  };
+
+  const handleSubjectChange = (subjectId: string) => {
+    setSelectedSubjectId(subjectId);
+    const sub = subjects.find((s) => s.examSubjectId === subjectId);
+    setNewMark(sub?.currentMarks !== null && sub?.currentMarks !== undefined ? String(sub.currentMarks) : "");
+    setErrorMsg(null);
+    setIsStale(false);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentSubject) return;
+
+    setErrorMsg(null);
+    setIsStale(false);
+    setSuccessMsg(null);
+
+    const numericMark = Number(newMark);
+    if (isNaN(numericMark) || numericMark < 0) {
+      setErrorMsg("Marks must be a non-negative number.");
+      return;
+    }
+    if (numericMark > currentSubject.maxMarks) {
+      setErrorMsg(`Marks cannot exceed maximum marks (${currentSubject.maxMarks}).`);
+      return;
+    }
+    if (reason.trim().length < 10) {
+      setErrorMsg("A detailed audit justification (minimum 10 characters) is required.");
+      return;
+    }
+
+    startTransition(async () => {
+      const res = await correctPublishedMarkAction({
+        examId,
+        examSubjectId: currentSubject.examSubjectId,
+        studentId,
+        newMark: numericMark,
+        expectedVersion: currentSubject.version,
+        reason: reason.trim(),
+      });
+
+      if (!res.ok) {
+        if (res.code === "STALE_VERSION") {
+          setIsStale(true);
+          setErrorMsg("The mark has been modified by another process. Please refresh the page before trying again.");
+        } else {
+          setErrorMsg(res.error || "Failed to correct published mark.");
+        }
+      } else {
+        setSuccessMsg("Mark corrected successfully! Updated ranking and snapshots have been generated.");
+        setTimeout(() => {
+          setOpen(false);
+          router.refresh();
+        }, 1000);
+      }
+    });
+  };
+
+  return (
+    <>
+      <button
+        onClick={handleOpen}
+        className="btn btn-ghost btn-xs text-amber-600 hover:text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40 inline-flex items-center gap-1"
+        title="Authorized Mark Correction"
+      >
+        <Edit3 className="h-3.5 w-3.5" /> Correct Mark
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="card w-full max-w-lg p-6 shadow-2xl bg-base-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-200 dark:border-zinc-800">
+              <div>
+                <h3 className="text-base font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5 text-amber-500" />
+                  Correct Published Mark
+                </h3>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  {studentName} • Adm No: <span className="font-mono">{admissionNo}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="btn btn-ghost btn-xs p-1 text-zinc-400 hover:text-zinc-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {errorMsg && (
+              <div className="p-3 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-xs rounded-xl border border-red-200 dark:border-red-800 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <div className="flex-1 space-y-1">
+                  <span>{errorMsg}</span>
+                  {isStale && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpen(false);
+                        router.refresh();
+                      }}
+                      className="btn btn-outline btn-xs mt-1.5 flex items-center gap-1 text-red-700 dark:text-red-300 border-red-300"
+                    >
+                      <RefreshCw className="h-3 w-3" /> Refresh Results Now
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {successMsg && (
+              <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-xs rounded-xl border border-emerald-200 dark:border-emerald-800 flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <span>{successMsg}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+                  Assessment Subject *
+                </label>
+                <select
+                  value={selectedSubjectId}
+                  onChange={(e) => handleSubjectChange(e.target.value)}
+                  disabled={isPending || isStale}
+                  className="select select-bordered select-sm w-full mt-1 text-xs"
+                >
+                  {subjects.map((sub) => (
+                    <option key={sub.examSubjectId} value={sub.examSubjectId}>
+                      {sub.subjectName} (Max: {sub.maxMarks}) — Current: {sub.currentMarks !== null ? sub.currentMarks : "None"} [v{sub.version}]
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 p-3 bg-zinc-50 dark:bg-zinc-800/40 rounded-xl border border-zinc-200 dark:border-zinc-800 text-xs">
+                <div>
+                  <span className="text-zinc-400 block">Current Mark</span>
+                  <span className="font-mono font-bold text-zinc-900 dark:text-zinc-100">
+                    {currentSubject?.currentMarks !== null && currentSubject?.currentMarks !== undefined ? currentSubject.currentMarks : "N/A"} / {currentSubject?.maxMarks}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-zinc-400 block">Tracked Version</span>
+                  <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                    v{currentSubject?.version}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+                  Corrected Mark *
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  max={currentSubject?.maxMarks ?? 1000}
+                  value={newMark}
+                  onChange={(e) => setNewMark(e.target.value)}
+                  disabled={isPending || isStale}
+                  placeholder={`0 - ${currentSubject?.maxMarks ?? 100}`}
+                  className="input input-bordered input-sm w-full mt-1 text-xs font-mono"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+                  Audit Justification * (min 10 characters)
+                </label>
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  disabled={isPending || isStale}
+                  placeholder="e.g. Question 5 revaluation approved by Academic Board"
+                  className="textarea textarea-bordered textarea-sm w-full mt-1 text-xs"
+                  rows={2}
+                  required
+                />
+                <span className="text-[10px] text-zinc-400 block mt-0.5">
+                  {reason.trim().length} / 10 characters minimum
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/40 text-[11px] text-amber-800 dark:text-amber-300">
+                Correcting this mark will recalculate exam-wide ranks, record an immutable revision event, and generate a new snapshot version for all affected candidates.
+              </div>
+
+              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  disabled={isPending}
+                  className="btn btn-ghost btn-sm text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isPending || isStale || reason.trim().length < 10}
+                  className="btn btn-primary btn-sm text-xs flex items-center gap-1.5"
+                >
+                  {isPending ? "Applying Correction..." : "Commit Correction"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
