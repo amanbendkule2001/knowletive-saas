@@ -13,6 +13,7 @@ import {
   dropStudentSchema,
   transferStudentSchema,
 } from "@/lib/batches-schema";
+import { lockBatchRow, lockBatchRows } from "@/lib/batch-locking";
 import type { BatchStatus } from "@prisma/client";
 
 function toDate(val: unknown): Date | null {
@@ -188,13 +189,7 @@ export async function updateBatchAction(batchId: string, _prev: FormState, formD
   try {
     await db.$transaction(async (tx) => {
       // 1. Pessimistic lock on Batch row to serialize capacity adjustments
-      const lockedBatches = await tx.$queryRaw<Array<{ id: string; code: string; capacity: number }>>`
-        SELECT id, code, capacity
-        FROM "Batch"
-        WHERE id = ${batchId} AND "tenantId" = ${ctx.tenant.id}
-        FOR UPDATE
-      `;
-      const existingBatch = lockedBatches[0];
+      const existingBatch = await lockBatchRow(tx, batchId, ctx.tenant.id);
       if (!existingBatch) {
         throw new Error("Batch not found or access denied.");
       }
@@ -357,13 +352,7 @@ export async function enrollStudentsAction(
   try {
     const result = await db.$transaction(async (tx) => {
       // 1. Concurrency-Safe Pessimistic Lock on Batch Row (FOR UPDATE)
-      const lockedBatches = await tx.$queryRaw<Array<{ id: string; name: string; capacity: number; status: string }>>`
-        SELECT id, name, capacity, status
-        FROM "Batch"
-        WHERE id = ${batchId} AND "tenantId" = ${ctx.tenant.id}
-        FOR UPDATE
-      `;
-      const batch = lockedBatches[0];
+      const batch = await lockBatchRow(tx, batchId, ctx.tenant.id);
       if (!batch) throw new Error("Batch not found or access denied.");
 
       // Phase 1 Requirement 6: Completed and archived batches must not accept new enrollments
@@ -491,10 +480,8 @@ export async function dropStudentAction(
   try {
     await db.$transaction(async (tx) => {
       // 1. Lock batch row and verify tenant ownership
-      const lockedBatches = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM "Batch" WHERE id = ${batchId} AND "tenantId" = ${ctx.tenant.id} FOR UPDATE
-      `;
-      if (!lockedBatches || lockedBatches.length === 0) {
+      const batch = await lockBatchRow(tx, batchId, ctx.tenant.id);
+      if (!batch) {
         throw new Error("Batch not found or access denied.");
       }
 
@@ -577,14 +564,7 @@ export async function transferStudentAction(
   try {
     await db.$transaction(async (tx) => {
       // 1. Phase 1 Requirement 9: Deterministic Lock Ordering (ORDER BY id ASC) to prevent deadlocks
-      const [firstId, secondId] = [fromBatchId, toBatchId].sort();
-      const lockedBatches = await tx.$queryRaw<Array<{ id: string; name: string; capacity: number; status: string }>>`
-        SELECT id, name, capacity, status
-        FROM "Batch"
-        WHERE id IN (${firstId}, ${secondId}) AND "tenantId" = ${ctx.tenant.id}
-        ORDER BY id ASC
-        FOR UPDATE
-      `;
+      const lockedBatches = await lockBatchRows(tx, [fromBatchId, toBatchId], ctx.tenant.id);
 
       const fromBatch = lockedBatches.find((b) => b.id === fromBatchId);
       const toBatch = lockedBatches.find((b) => b.id === toBatchId);
@@ -725,13 +705,7 @@ export async function completeBatchAction(batchId: string): Promise<{ success?: 
   try {
     await db.$transaction(async (tx) => {
       // Lock batch row FOR UPDATE
-      const lockedBatches = await tx.$queryRaw<Array<{ id: string; name: string; status: string; endDate: Date | null }>>`
-        SELECT id, name, status, "endDate"
-        FROM "Batch"
-        WHERE id = ${batchId} AND "tenantId" = ${ctx.tenant.id}
-        FOR UPDATE
-      `;
-      const batch = lockedBatches[0];
+      const batch = await lockBatchRow(tx, batchId, ctx.tenant.id);
       if (!batch) throw new Error("Batch not found or access denied.");
       if (batch.status === "COMPLETED") throw new Error("Batch is already completed.");
       if (batch.status === "ARCHIVED") throw new Error("Cannot complete an archived batch.");

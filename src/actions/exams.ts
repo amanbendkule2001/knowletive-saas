@@ -22,6 +22,7 @@ import {
 } from "@/lib/exams-schema";
 import {
   lockExaminationRow,
+  lockBatchRow,
   verifyCandidateSubjectCompleteness,
   transitionExamStatus,
 } from "@/lib/exam-lifecycle";
@@ -578,6 +579,20 @@ export async function autoEnrollEligibleStudentsAction(examId: string): Promise<
         eligibleStudentIds = students.map((s) => s.id);
       }
     } else if (exam.targetType === "BATCH" && exam.batchId) {
+      // Coordinated shared lock: In global hierarchy (Examination -> Batch), acquire Batch row lock
+      // FOR UPDATE before reading BatchStudent records to serialize with concurrent batch mutations.
+      const lockedBatch = await lockBatchRow(tx, exam.batchId, ctx.tenant.id);
+      if (!lockedBatch) {
+        return { ok: false, error: "Associated batch not found or access denied." };
+      }
+      if (lockedBatch.status !== "ACTIVE") {
+        return {
+          ok: false,
+          code: "INVALID_TRANSITION",
+          error: `Cannot auto-enroll from batch '${lockedBatch.name}' because it is ${lockedBatch.status} (only ACTIVE batches allow examination enrollment).`,
+        };
+      }
+
       const enrollments = await tx.batchStudent.findMany({
         where: { batchId: exam.batchId, status: "ACTIVE" },
         select: { studentId: true },
@@ -663,6 +678,20 @@ export async function enrollStudentsAction(input: unknown): Promise<ActionResult
 
     // Phase 2 & 3: Validate candidate eligibility against target academic unit
     if (exam.targetType === "BATCH" && exam.batchId) {
+      // Coordinated shared lock: In global hierarchy (Examination -> Batch), acquire Batch row lock
+      // FOR UPDATE before reading BatchStudent records to serialize with concurrent batch mutations.
+      const lockedBatch = await lockBatchRow(tx, exam.batchId, ctx.tenant.id);
+      if (!lockedBatch) {
+        return { ok: false, error: "Associated batch not found or access denied." };
+      }
+      if (lockedBatch.status !== "ACTIVE") {
+        return {
+          ok: false,
+          code: "INVALID_TRANSITION",
+          error: `Cannot enroll students into an exam for batch '${lockedBatch.name}' because it is ${lockedBatch.status}.`,
+        };
+      }
+
       const activeBatchStudents = await tx.batchStudent.findMany({
         where: { batchId: exam.batchId, studentId: { in: studentIds }, status: "ACTIVE" },
         select: { studentId: true },
@@ -672,7 +701,7 @@ export async function enrollStudentsAction(input: unknown): Promise<ActionResult
       if (invalidStudents.length > 0) {
         return {
           ok: false,
-          error: `One or more selected students are not active members of batch '${exam.batch?.name}'.`,
+          error: `One or more selected students are not active members of batch '${lockedBatch.name}'.`,
         };
       }
     } else if (exam.targetType === "CLASS_SECTION" && exam.classId) {

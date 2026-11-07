@@ -1,6 +1,7 @@
 import { writeAudit } from "@/lib/audit";
 import { hasTenantPermission, type TenantContext } from "@/lib/auth";
 import type { ExamStatus, Prisma } from "@prisma/client";
+export { lockBatchRow, lockBatchRows, type LockedBatch } from "@/lib/batch-locking";
 
 export type TransitionResult = {
   ok: boolean;

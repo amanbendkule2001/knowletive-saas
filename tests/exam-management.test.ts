@@ -72,7 +72,16 @@ import {
   VALID_EXAM_TRANSITIONS,
   assertExamTransition,
   verifyCandidateSubjectCompleteness,
+  lockExaminationRow,
+  lockBatchRow,
+  lockBatchRows,
 } from "@/lib/exam-lifecycle";
+import {
+  enrollStudentsAction as batchEnrollStudentsAction,
+  dropStudentAction as batchDropStudentAction,
+  transferStudentAction as batchTransferStudentAction,
+  completeBatchAction,
+} from "@/actions/batches";
 
 describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
   let tenantA: { id: string; name: string };
@@ -89,6 +98,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
 
   const createdExamIds: string[] = [];
   const createdStudentIds: string[] = [];
+  const createdBatchIds: string[] = [];
 
   beforeAll(async () => {
     const tenants = await db.tenant.findMany({
@@ -99,10 +109,15 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
     tenantA = tenants[0];
     tenantB = tenants[1];
 
-    // Find or create academic year
+    // Find or create academic year (prefer active)
     let ay = await db.academicYear.findFirst({
-      where: { tenantId: tenantA.id },
+      where: { tenantId: tenantA.id, isActive: true },
     });
+    if (!ay) {
+      ay = await db.academicYear.findFirst({
+        where: { tenantId: tenantA.id },
+      });
+    }
     if (!ay) {
       ay = await db.academicYear.create({
         data: {
@@ -275,6 +290,19 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
     if (batchA) {
       await db.batchStudent.deleteMany({ where: { batchId: batchA.id } });
       await db.batch.delete({ where: { id: batchA.id } }).catch(() => {});
+    }
+
+    if (createdBatchIds.length > 0) {
+      try {
+        await db.$executeRawUnsafe(`ALTER TABLE "BatchEnrollmentEvent" DISABLE TRIGGER trg_prevent_batch_event_tampering;`);
+        await db.batchEnrollmentEvent.deleteMany({ where: { batchId: { in: createdBatchIds } } });
+        await db.batchStudent.deleteMany({ where: { batchId: { in: createdBatchIds } } });
+        await db.batchTeacher.deleteMany({ where: { batchId: { in: createdBatchIds } } });
+        await db.batch.deleteMany({ where: { id: { in: createdBatchIds } } });
+        await db.$executeRawUnsafe(`ALTER TABLE "BatchEnrollmentEvent" ENABLE TRIGGER trg_prevent_batch_event_tampering;`);
+      } catch (err) {
+        console.error("Cleanup error for batches in afterAll:", err);
+      }
     }
 
     if (createdStudentIds.length > 0) {
@@ -6406,6 +6434,971 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
         reason: "Unauthorized attempt",
       });
       expect(deniedReopen.ok).toBe(false);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // SECTION 17: STAGE 4.3 STEP 4 — CROSS-AGGREGATE BATCH & EXAMINATION ENROLLMENT CONSISTENCY
+  // ─────────────────────────────────────────────────────────────
+
+  describe("Section 17: Stage 4.3 Step 4 — Cross-Aggregate Batch & Examination Enrollment Consistency", () => {
+    let s17Batch1: { id: string; name: string };
+    let s17Batch2: { id: string; name: string };
+    let s17Batch3: { id: string; name: string };
+    let s17Exam1: Examination;
+    let s17Exam2: Examination;
+    let s17Exam3: Examination;
+    let membershipIdA: string;
+    let adminUserIdA: string;
+
+    const mockAuth = (tenantId = tenantA.id, userId?: string) => {
+      vi.mocked(authorizeTenantWrite).mockResolvedValue({
+        ok: true,
+        ctx: {
+          tenant: { id: tenantId, name: "Tenant Mock" } as unknown as TenantContext["tenant"],
+          user: { id: userId || adminUserIdA, name: "Admin Officer" } as unknown as TenantContext["user"],
+          membership: { roleKey: "ADMIN" } as unknown as TenantContext["membership"],
+          permissions: new Set([
+            "tenant.exams.write",
+            "tenant.exams.enroll",
+            "tenant.exams.verify_marks",
+            "tenant.exams.manage_grading",
+            "tenant.batches.write",
+            "tenant.batches.enroll",
+            "tenant.batches.transfer",
+          ]),
+          subscriptionBlocked: false,
+          isOwnerView: true,
+        },
+      });
+    };
+
+    beforeAll(async () => {
+      const mem = await db.membership.findFirst({
+        where: { tenantId: tenantA.id },
+      });
+      membershipIdA = mem!.id;
+      adminUserIdA = mem!.userId;
+
+      mockAuth();
+
+      // Create isolated batches for Section 17
+      const suffix = Date.now().toString().slice(-6);
+      s17Batch1 = await db.batch.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          name: `S17 Batch Alpha ${suffix}`,
+          code: `B17A-${suffix}`,
+          capacity: 40,
+          status: "ACTIVE",
+        },
+      });
+      createdBatchIds.push(s17Batch1.id);
+
+      s17Batch2 = await db.batch.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          name: `S17 Batch Beta ${suffix}`,
+          code: `B17B-${suffix}`,
+          capacity: 40,
+          status: "ACTIVE",
+        },
+      });
+      createdBatchIds.push(s17Batch2.id);
+
+      s17Batch3 = await db.batch.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          name: `S17 Batch Gamma ${suffix}`,
+          code: `B17C-${suffix}`,
+          capacity: 40,
+          status: "ACTIVE",
+        },
+      });
+      createdBatchIds.push(s17Batch3.id);
+
+      // Create isolated examinations targeting s17Batch1
+      s17Exam1 = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `S17 Examination One ${suffix}`,
+          code: `EX17-1-${suffix}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(s17Exam1.id);
+
+      s17Exam2 = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `S17 Examination Two ${suffix}`,
+          code: `EX17-2-${suffix}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(s17Exam2.id);
+
+      s17Exam3 = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch2.id,
+          title: `S17 Examination Three ${suffix}`,
+          code: `EX17-3-${suffix}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(s17Exam3.id);
+    });
+
+    // Helper to create active student
+    const createTestStudent = async (first: string, last: string) => {
+      const s = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: first,
+          lastName: `${last}-${Date.now().toString().slice(-4)}`,
+          admissionNo: `ADM-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 1000)}`,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(s.id);
+      return s;
+    };
+
+    // ─────────────────────────────────────────────────────────
+    // Sub-Suite A: Batch Drop vs Auto-Enrollment
+    // ─────────────────────────────────────────────────────────
+
+    it("1. Batch drop commits before auto-enrollment reads membership", async () => {
+      mockAuth();
+      const s1 = await createTestStudent("DropWin", "S1");
+      await batchEnrollStudentsAction(s17Batch1.id, [s1.id]);
+
+      // 1. Batch drop acquires lock and commits
+      const dropRes = await batchDropStudentAction(s17Batch1.id, s1.id, "Withdrawn before exam");
+      expect(dropRes.success).toBeDefined();
+
+      // 2. Auto-enrollment runs on s17Exam1
+      const enrollRes = await autoEnrollEligibleStudentsAction(s17Exam1.id);
+      // s1 was dropped, so s1 must not be enrolled
+      const enr = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: s17Exam1.id, studentId: s1.id } },
+      });
+      expect(enr).toBeNull();
+    });
+
+    it("2. Auto-enrollment commits before batch drop (snapshot semantics)", async () => {
+      mockAuth();
+      const s2 = await createTestStudent("AutoWin", "S2");
+      await batchEnrollStudentsAction(s17Batch1.id, [s2.id]);
+
+      // 1. Auto-enrollment acquires lock and commits
+      const enrollRes = await autoEnrollEligibleStudentsAction(s17Exam1.id);
+      expect(enrollRes.ok).toBe(true);
+      const enrBeforeDrop = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: s17Exam1.id, studentId: s2.id } },
+      });
+      expect(enrBeforeDrop).not.toBeNull();
+      expect(enrBeforeDrop?.status).toBe("ELIGIBLE");
+
+      // 2. Batch drop acquires lock and commits
+      const dropRes = await batchDropStudentAction(s17Batch1.id, s2.id, "Dropped after exam enroll");
+      expect(dropRes.success).toBeDefined();
+
+      // 3. Snapshot semantics: Examination enrollment remains intact
+      const enrAfterDrop = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: s17Exam1.id, studentId: s2.id } },
+      });
+      expect(enrAfterDrop).not.toBeNull();
+      expect(enrAfterDrop?.status).toBe("ELIGIBLE");
+    });
+
+    it("3. Concurrent operations serialize correctly with explicit barrier (Batch drop vs Auto-enrollment)", async () => {
+      mockAuth();
+      const s3 = await createTestStudent("ConcDrop", "S3");
+      await batchEnrollStudentsAction(s17Batch1.id, [s3.id]);
+
+      const examConc = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Concurrent Drop Test ${Date.now()}`,
+          code: `EX17-CONC-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examConc.id);
+
+      // Explicit synchronization barriers for controlled transaction overlap
+      let t1HoldingLock!: () => void;
+      const t1LockPromise = new Promise<void>((res) => { t1HoldingLock = res; });
+      let releaseT1!: () => void;
+      const t1ReleasePromise = new Promise<void>((res) => { releaseT1 = res; });
+
+      // T1: Explicitly locks Batch 1, signals barrier, and waits
+      const t1Promise = db.$transaction(async (tx) => {
+        const locked = await lockBatchRow(tx, s17Batch1.id, tenantA.id);
+        expect(locked).not.toBeNull();
+        t1HoldingLock(); // signal: T1 now authoritatively holds row lock in PostgreSQL kernel
+        await t1ReleasePromise; // wait until T2 has attempted to acquire the lock
+
+        // Perform drop mutation and commit
+        await tx.batchStudent.update({
+          where: { batchId_studentId: { batchId: s17Batch1.id, studentId: s3.id } },
+          data: { status: "DROPPED", droppedAt: new Date(), dropReason: "Controlled barrier drop" },
+        });
+      });
+
+      // Wait until T1 is confirmed holding the Batch row lock
+      await t1LockPromise;
+
+      // T2: auto-enrollment begins while T1 is holding the lock.
+      // T2 acquires Examination lock, then attempts to acquire Batch lock and blocks in PostgreSQL kernel
+      const t2Promise = autoEnrollEligibleStudentsAction(examConc.id);
+
+      // Brief pause to ensure T2 has reached the Batch lock barrier and is queued
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Release T1 to commit its drop mutation
+      releaseT1();
+      await t1Promise;
+
+      // T2 unblocks, reads the freshly committed DROPPED state, and completes
+      const enrollResult = await t2Promise;
+      expect(enrollResult).toBeDefined();
+
+      // Assert exact row counts and states
+      const batchMembership = await db.batchStudent.findUnique({
+        where: { batchId_studentId: { batchId: s17Batch1.id, studentId: s3.id } },
+      });
+      expect(batchMembership?.status).toBe("DROPPED");
+
+      const enr = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examConc.id, studentId: s3.id } },
+      });
+      expect(enr).toBeNull(); // Strictly no stale enrollment admitted
+    });
+
+    it("4. No candidate is enrolled based on a stale membership read", async () => {
+      mockAuth();
+      const s4 = await createTestStudent("StaleCheck", "S4");
+      await batchEnrollStudentsAction(s17Batch1.id, [s4.id]);
+
+      // Explicitly drop student within a row-locked transaction
+      await db.$transaction(async (tx) => {
+        const locked = await lockBatchRow(tx, s17Batch1.id, tenantA.id);
+        expect(locked).not.toBeNull();
+        await tx.batchStudent.update({
+          where: { batchId_studentId: { batchId: s17Batch1.id, studentId: s4.id } },
+          data: { status: "DROPPED", droppedAt: new Date() },
+        });
+      });
+
+      const examStale = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Stale Check Exam ${Date.now()}`,
+          code: `EX17-STALE-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examStale.id);
+
+      await autoEnrollEligibleStudentsAction(examStale.id);
+      const enr = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examStale.id, studentId: s4.id } },
+      });
+      expect(enr).toBeNull(); // Strictly no stale enrollment
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // Sub-Suite B: Batch Addition vs Auto-Enrollment
+    // ─────────────────────────────────────────────────────────
+
+    it("5. Batch addition wins the shared lock first (controlled barrier)", async () => {
+      mockAuth();
+      const s5 = await createTestStudent("AddFirst", "S5");
+
+      const examAdd = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Add First Exam ${Date.now()}`,
+          code: `EX17-ADD1-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examAdd.id);
+
+      // Synchronization barrier
+      let t1HoldingLock!: () => void;
+      const t1LockPromise = new Promise<void>((res) => { t1HoldingLock = res; });
+      let releaseT1!: () => void;
+      const t1ReleasePromise = new Promise<void>((res) => { releaseT1 = res; });
+
+      // T1: locks Batch 1, holds lock, signals
+      const t1Promise = db.$transaction(async (tx) => {
+        const locked = await lockBatchRow(tx, s17Batch1.id, tenantA.id);
+        expect(locked).not.toBeNull();
+        t1HoldingLock();
+        await t1ReleasePromise;
+
+        // Perform batch enrollment
+        await tx.batchStudent.create({
+          data: {
+            batchId: s17Batch1.id,
+            studentId: s5.id,
+            status: "ACTIVE",
+          },
+        });
+      });
+
+      await t1LockPromise;
+
+      // T2: auto-enrollment launched, blocks on Batch 1 row lock
+      const t2Promise = autoEnrollEligibleStudentsAction(examAdd.id);
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Release T1 to commit addition
+      releaseT1();
+      await t1Promise;
+
+      // T2 unblocks, queries active members (now sees s5), enrolls s5
+      const enrollRes = await t2Promise;
+      expect(enrollRes.ok).toBe(true);
+
+      const enr = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examAdd.id, studentId: s5.id } },
+      });
+      expect(enr).not.toBeNull();
+    });
+
+    it("6. Auto-enrollment wins the shared lock first", async () => {
+      mockAuth();
+      const s6 = await createTestStudent("AutoFirst", "S6");
+
+      const examEmpty = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch2.id, // currently empty
+          title: `Empty Exam ${Date.now()}`,
+          code: `EX17-EMP-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examEmpty.id);
+
+      // Auto-enrollment runs while s6 is not yet in batch
+      const enroll1 = await autoEnrollEligibleStudentsAction(examEmpty.id);
+      expect(enroll1.ok).toBe(false); // No eligible candidates yet
+
+      // Now s6 is added
+      await batchEnrollStudentsAction(s17Batch2.id, [s6.id]);
+
+      // Candidate is not in exam until next auto-enrollment
+      const enrBefore = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examEmpty.id, studentId: s6.id } },
+      });
+      expect(enrBefore).toBeNull();
+
+      // Subsequent auto-enrollment picks up candidate
+      const enroll2 = await autoEnrollEligibleStudentsAction(examEmpty.id);
+      expect(enroll2.ok).toBe(true);
+      const enrAfter = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examEmpty.id, studentId: s6.id } },
+      });
+      expect(enrAfter).not.toBeNull();
+    });
+
+    it("7. The resulting enrollment reflects the serialized membership state", async () => {
+      mockAuth();
+      const s7 = await createTestStudent("ActiveMember", "S7");
+      const s8 = await createTestStudent("DroppedMember", "S8");
+
+      await batchEnrollStudentsAction(s17Batch1.id, [s7.id, s8.id]);
+      await batchDropStudentAction(s17Batch1.id, s8.id, "Dropped before snapshot");
+
+      const examState = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `State Snapshot Exam ${Date.now()}`,
+          code: `EX17-SNAP-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examState.id);
+
+      await autoEnrollEligibleStudentsAction(examState.id);
+
+      // s7 was active -> enrolled
+      const enr7 = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examState.id, studentId: s7.id } },
+      });
+      expect(enr7).not.toBeNull();
+
+      // s8 was dropped -> NOT enrolled
+      const enr8 = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examState.id, studentId: s8.id } },
+      });
+      expect(enr8).toBeNull();
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // Sub-Suite C: Batch Transfers
+    // ─────────────────────────────────────────────────────────
+
+    it("8. Transfer out of an examination's associated batch versus auto-enrollment", async () => {
+      mockAuth();
+      const s9 = await createTestStudent("TransferOut", "S9");
+      await batchEnrollStudentsAction(s17Batch1.id, [s9.id]);
+
+      // Transfer s9 from Batch 1 to Batch 2
+      const xfer = await batchTransferStudentAction(s17Batch1.id, s17Batch2.id, s9.id, "Relocation");
+      expect(xfer.success).toBeDefined();
+
+      const examB1 = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Batch 1 Exam ${Date.now()}`,
+          code: `EX17-XOUT-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examB1.id);
+
+      await autoEnrollEligibleStudentsAction(examB1.id);
+
+      // s9 is no longer in Batch 1 -> not enrolled in Batch 1 exam
+      const enr = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examB1.id, studentId: s9.id } },
+      });
+      expect(enr).toBeNull();
+    });
+
+    it("9. Transfer into an examination's associated batch versus auto-enrollment", async () => {
+      mockAuth();
+      const s10 = await createTestStudent("TransferIn", "S10");
+      await batchEnrollStudentsAction(s17Batch2.id, [s10.id]);
+
+      // Transfer s10 from Batch 2 into Batch 1
+      const xfer = await batchTransferStudentAction(s17Batch2.id, s17Batch1.id, s10.id, "Promotion");
+      expect(xfer.success).toBeDefined();
+
+      const examB1 = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Batch 1 Incoming Exam ${Date.now()}`,
+          code: `EX17-XIN-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examB1.id);
+
+      await autoEnrollEligibleStudentsAction(examB1.id);
+
+      // s10 is now active in Batch 1 -> enrolled in Batch 1 exam
+      const enr = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examB1.id, studentId: s10.id } },
+      });
+      expect(enr).not.toBeNull();
+    });
+
+    it("10. Concurrent transfers involving the same student", async () => {
+      mockAuth();
+      const s11 = await createTestStudent("RaceXfer", "S11");
+      await batchEnrollStudentsAction(s17Batch1.id, [s11.id]);
+
+      // Two concurrent transfers of s11: from B1 to B2, and from B1 to B3
+      const [res1, res2] = await Promise.all([
+        batchTransferStudentAction(s17Batch1.id, s17Batch2.id, s11.id, "Race to B2"),
+        batchTransferStudentAction(s17Batch1.id, s17Batch3.id, s11.id, "Race to B3"),
+      ]);
+
+      const successes = [res1, res2].filter((r) => r.success);
+      const errors = [res1, res2].filter((r) => r.error);
+
+      // Exactly one transfer must win, the other must fail with source membership error
+      expect(successes.length).toBe(1);
+      expect(errors.length).toBe(1);
+
+      // Verify student is active in exactly one destination batch
+      const activeBatches = await db.batchStudent.findMany({
+        where: { studentId: s11.id, status: "ACTIVE" },
+      });
+      expect(activeBatches.length).toBe(1);
+    });
+
+    it("11. Reverse-direction transfers do not create a deadlock due to inconsistent batch lock ordering (controlled barrier)", async () => {
+      mockAuth();
+      const studentA = await createTestStudent("RevA", "A");
+      const studentB = await createTestStudent("RevB", "B");
+
+      await batchEnrollStudentsAction(s17Batch1.id, [studentA.id]);
+      await batchEnrollStudentsAction(s17Batch2.id, [studentB.id]);
+
+      // Synchronization barrier
+      let t1HoldingDualLocks!: () => void;
+      const t1LockPromise = new Promise<void>((res) => { t1HoldingDualLocks = res; });
+      let releaseT1!: () => void;
+      const t1ReleasePromise = new Promise<void>((res) => { releaseT1 = res; });
+
+      // T1 (Direction: B1 -> B2): acquires locks on [B1, B2] sorted by ID ASC, signals, waits on barrier
+      const t1Promise = db.$transaction(async (tx) => {
+        const locked = await lockBatchRows(tx, [s17Batch1.id, s17Batch2.id], tenantA.id);
+        expect(locked.length).toBe(2);
+        t1HoldingDualLocks();
+        await t1ReleasePromise;
+
+        // Perform transfer A
+        await tx.batchStudent.update({
+          where: { batchId_studentId: { batchId: s17Batch1.id, studentId: studentA.id } },
+          data: { status: "TRANSFERRED", droppedAt: new Date(), dropReason: "Reverse transfer A" },
+        });
+        await tx.batchStudent.create({
+          data: { batchId: s17Batch2.id, studentId: studentA.id, status: "ACTIVE" },
+        });
+      });
+
+      await t1LockPromise;
+
+      // T2 (Reverse Direction: B2 -> B1): attempts to acquire locks on [B2, B1]
+      // Because lockBatchRows sorts [B2, B1] to [B1, B2] ASC, T2 requests the exact same first lock
+      // and blocks cleanly in PostgreSQL kernel waiting for T1 to commit (NO DEADLOCK CYCLE!).
+      const t2Promise = batchTransferStudentAction(s17Batch2.id, s17Batch1.id, studentB.id, "B to B1");
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Release T1 to commit
+      releaseT1();
+      await t1Promise;
+
+      // T2 unblocks, acquires [B1, B2] in same order, and completes cleanly
+      const resB = await t2Promise;
+      expect(resB.success).toBeDefined();
+
+      // Final membership checks: both students successfully moved to destination batches
+      const finalA = await db.batchStudent.findUnique({
+        where: { batchId_studentId: { batchId: s17Batch2.id, studentId: studentA.id } },
+      });
+      const finalB = await db.batchStudent.findUnique({
+        where: { batchId_studentId: { batchId: s17Batch1.id, studentId: studentB.id } },
+      });
+      expect(finalA?.status).toBe("ACTIVE");
+      expect(finalB?.status).toBe("ACTIVE");
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // Sub-Suite D: Multiple Examinations & Isolation
+    // ─────────────────────────────────────────────────────────
+
+    it("12. Concurrent auto-enrollment into two examinations associated with the same batch (controlled barrier)", async () => {
+      mockAuth();
+      const s12 = await createTestStudent("DualExam", "S12");
+      await batchEnrollStudentsAction(s17Batch1.id, [s12.id]);
+
+      // Synchronization barrier
+      let t1HoldingLocks!: () => void;
+      const t1LockPromise = new Promise<void>((res) => { t1HoldingLocks = res; });
+      let releaseT1!: () => void;
+      const t1ReleasePromise = new Promise<void>((res) => { releaseT1 = res; });
+
+      // T1 (auto-enroll Exam 1): locks Exam 1, then locks Batch 1, signals, and waits
+      const t1Promise = db.$transaction(async (tx) => {
+        const lockedE1 = await lockExaminationRow(tx, s17Exam1.id, tenantA.id);
+        expect(lockedE1).not.toBeNull();
+        const lockedB1 = await lockBatchRow(tx, s17Batch1.id, tenantA.id);
+        expect(lockedB1).not.toBeNull();
+
+        t1HoldingLocks();
+        await t1ReleasePromise;
+
+        // Create enrollment for s12 in Exam 1
+        await tx.examEnrollment.upsert({
+          where: { examId_studentId: { examId: s17Exam1.id, studentId: s12.id } },
+          create: { tenantId: tenantA.id, examId: s17Exam1.id, studentId: s12.id, status: "ELIGIBLE" },
+          update: {},
+        });
+      });
+
+      await t1LockPromise;
+
+      // T2 (auto-enroll Exam 2): locks Exam 2, then attempts to lock Batch 1
+      // Because T1 holds Batch 1 lock, T2 blocks in PostgreSQL row lock wait queue
+      const t2Promise = autoEnrollEligibleStudentsAction(s17Exam2.id);
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Release T1 to commit and release Batch 1 lock
+      releaseT1();
+      await t1Promise;
+
+      // T2 unblocks, acquires Batch 1 lock, and completes
+      const res2 = await t2Promise;
+      expect(res2.ok).toBe(true);
+
+      // Both exams enrolled s12 cleanly with zero deadlock
+      const enr1 = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: s17Exam1.id, studentId: s12.id } },
+      });
+      const enr2 = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: s17Exam2.id, studentId: s12.id } },
+      });
+      expect(enr1).not.toBeNull();
+      expect(enr2).not.toBeNull();
+    });
+
+    it("13. Auto-enrollment into multiple batches where applicable", async () => {
+      // Test lockBatchRows helper with empty, single, and multiple batch IDs
+      await db.$transaction(async (tx) => {
+        const empty = await lockBatchRows(tx, [], tenantA.id);
+        expect(empty).toEqual([]);
+
+        const multi = await lockBatchRows(tx, [s17Batch3.id, s17Batch1.id, s17Batch2.id], tenantA.id);
+        expect(multi.length).toBe(3);
+        // Verify deterministic ascending order
+        expect(multi[0].id < multi[1].id).toBe(true);
+        expect(multi[1].id < multi[2].id).toBe(true);
+      });
+    });
+
+    it("14. Concurrent batch enrollments versus capacity limit (controlled barrier)", async () => {
+      mockAuth();
+      const suffix = Date.now().toString().slice(-6);
+      const cap1Batch = await db.batch.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          name: `Cap 1 Batch ${suffix}`,
+          code: `B17-CAP1-${suffix}`,
+          capacity: 1, // Only 1 seat available!
+          status: "ACTIVE",
+        },
+      });
+      createdBatchIds.push(cap1Batch.id);
+
+      const sCapA = await createTestStudent("CapA", "14A");
+      const sCapB = await createTestStudent("CapB", "14B");
+
+      // Barrier setup
+      let t1HoldingLock!: () => void;
+      const t1LockPromise = new Promise<void>((res) => { t1HoldingLock = res; });
+      let releaseT1!: () => void;
+      const t1ReleasePromise = new Promise<void>((res) => { releaseT1 = res; });
+
+      // T1 locks batch, holds lock, signals
+      const t1Promise = db.$transaction(async (tx) => {
+        const locked = await lockBatchRow(tx, cap1Batch.id, tenantA.id);
+        expect(locked).not.toBeNull();
+        t1HoldingLock();
+        await t1ReleasePromise;
+
+        // Fills the only available seat
+        await tx.batchStudent.create({
+          data: { batchId: cap1Batch.id, studentId: sCapA.id, status: "ACTIVE" },
+        });
+      });
+
+      await t1LockPromise;
+
+      // T2 attempts enrollment on same batch, blocks on row lock
+      const t2Promise = batchEnrollStudentsAction(cap1Batch.id, [sCapB.id]);
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Release T1 to commit seat filling
+      releaseT1();
+      await t1Promise;
+
+      // T2 unblocks, re-reads active count (1/1), and rejects with capacity exceeded
+      const resB = await t2Promise;
+      expect(resB.error).toContain("capacity exceeded");
+
+      // Final verification: exactly 1 student actively enrolled
+      const activeCount = await db.batchStudent.count({
+        where: { batchId: cap1Batch.id, status: "ACTIVE" },
+      });
+      expect(activeCount).toBe(1);
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // Sub-Suite E: Integrity, Lifecycle & Authorization
+    // ─────────────────────────────────────────────────────────
+
+    it("15. Duplicate enrollment prevention (idempotency)", async () => {
+      mockAuth();
+      const s15 = await createTestStudent("Idemp", "S15");
+      await batchEnrollStudentsAction(s17Batch1.id, [s15.id]);
+
+      const examIdemp = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Idempotency Exam ${Date.now()}`,
+          code: `EX17-IDM-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examIdemp.id);
+
+      // First run enrolls eligible students
+      const firstRun = await autoEnrollEligibleStudentsAction(examIdemp.id);
+      expect(firstRun.ok).toBe(true);
+      const count1 = await db.examEnrollment.count({ where: { examId: examIdemp.id } });
+
+      // Second run is idempotent (no duplicates created)
+      const secondRun = await autoEnrollEligibleStudentsAction(examIdemp.id);
+      const count2 = await db.examEnrollment.count({ where: { examId: examIdemp.id } });
+      expect(count2).toBe(count1);
+    });
+
+    it("16. Tenant isolation: cross-tenant enrollment rejected", async () => {
+      // User from Tenant B tries to auto-enroll Tenant A examination
+      mockAuth(tenantB.id);
+
+      const crossRes = await autoEnrollEligibleStudentsAction(s17Exam1.id);
+      expect(crossRes.ok).toBe(false);
+      expect(crossRes.error).toBe("Examination not found.");
+    });
+
+    it("17. Archived/closed batch restrictions", async () => {
+      mockAuth();
+      const suffix = Date.now().toString().slice(-6);
+      const closedBatch = await db.batch.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          name: `Closed Batch ${suffix}`,
+          code: `B17-CLS-${suffix}`,
+          capacity: 30,
+          status: "COMPLETED",
+        },
+      });
+      createdBatchIds.push(closedBatch.id);
+
+      const examClosed = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: closedBatch.id,
+          title: `Closed Batch Exam ${suffix}`,
+          code: `EX17-CLS-${suffix}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examClosed.id);
+
+      // Auto-enrollment on non-active batch rejected with INVALID_TRANSITION
+      const autoRes = await autoEnrollEligibleStudentsAction(examClosed.id);
+      expect(autoRes.ok).toBe(false);
+      expect(autoRes.code).toBe("INVALID_TRANSITION");
+
+      // Manual enrollment into exam targeting non-active batch rejected
+      const sDummy = await createTestStudent("Dummy", "S");
+      const manualRes = await enrollStudentsAction({
+        examId: examClosed.id,
+        studentIds: [sDummy.id],
+      });
+      expect(manualRes.ok).toBe(false);
+      expect(manualRes.code).toBe("INVALID_TRANSITION");
+    });
+
+    it("18. Invalid examination lifecycle transitions reject enrollment", async () => {
+      mockAuth();
+      const suffix = Date.now().toString().slice(-6);
+      const evaluatedExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Evaluated Exam ${suffix}`,
+          code: `EX17-EV-${suffix}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "EVALUATED",
+        },
+      });
+      createdExamIds.push(evaluatedExam.id);
+
+      const enrollEval = await autoEnrollEligibleStudentsAction(evaluatedExam.id);
+      expect(enrollEval.ok).toBe(false);
+      expect(enrollEval.code).toBe("INVALID_TRANSITION");
+
+      const archivedExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Archived Exam ${suffix}`,
+          code: `EX17-ARC-${suffix}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "ARCHIVED",
+        },
+      });
+      createdExamIds.push(archivedExam.id);
+
+      const enrollArch = await autoEnrollEligibleStudentsAction(archivedExam.id);
+      expect(enrollArch.ok).toBe(false);
+      expect(enrollArch.code).toBe("INVALID_TRANSITION");
+    });
+
+    it("19. Transaction rollback on any failed validation", async () => {
+      mockAuth();
+      const validStudent = await createTestStudent("ValidCandidate", "S19");
+      const nonBatchStudent = await createTestStudent("NonBatch", "S19");
+
+      await batchEnrollStudentsAction(s17Batch1.id, [validStudent.id]);
+
+      const examRollback = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Rollback Exam ${Date.now()}`,
+          code: `EX17-RB-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examRollback.id);
+
+      // Attempt manual enrollment of 1 valid candidate and 1 non-batch candidate
+      const result = await enrollStudentsAction({
+        examId: examRollback.id,
+        studentIds: [validStudent.id, nonBatchStudent.id],
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("not active members of batch");
+
+      // Confirm complete atomic rollback: valid student was NOT enrolled
+      const enr = await db.examEnrollment.findUnique({
+        where: { examId_studentId: { examId: examRollback.id, studentId: validStudent.id } },
+      });
+      expect(enr).toBeNull();
+    });
+
+    it("20. Audit event consistency across batch and examination operations", async () => {
+      mockAuth();
+      const s20 = await createTestStudent("AuditVerify", "S20");
+
+      // 1. Batch enrollment emits audit
+      await batchEnrollStudentsAction(s17Batch1.id, [s20.id]);
+      const batchAudit = await db.auditLog.findFirst({
+        where: { entityId: s17Batch1.id, action: "batch.students_enrolled" },
+      });
+      expect(batchAudit).not.toBeNull();
+
+      // 2. Exam auto-enrollment emits audit
+      const examAuditTest = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "BATCH",
+          batchId: s17Batch1.id,
+          title: `Audit Test Exam ${Date.now()}`,
+          code: `EX17-AUD-${Date.now().toString().slice(-6)}`,
+          startDate: new Date("2026-12-01"),
+          endDate: new Date("2026-12-05"),
+          createdById: membershipIdA,
+          status: "IN_PROGRESS",
+        },
+      });
+      createdExamIds.push(examAuditTest.id);
+
+      await autoEnrollEligibleStudentsAction(examAuditTest.id);
+      const examAudit = await db.auditLog.findFirst({
+        where: { entityId: examAuditTest.id, action: "exam.auto_enrolled_students" },
+      });
+      expect(examAudit).not.toBeNull();
     });
   });
 });
