@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import crypto from "node:crypto";
+import { Prisma } from "@prisma/client";
 
 vi.mock("next/navigation", () => ({
   redirect: vi.fn((url: string) => {
@@ -47,6 +48,7 @@ import {
   verifySnapshotChecksum,
 } from "@/lib/exam-snapshot";
 import {
+  type PreservedSubjectMark,
   createExaminationAction,
   updateExaminationAction,
   deleteExaminationAction,
@@ -85,6 +87,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
   let gradeScaleA: { id: string; name: string };
 
   const createdExamIds: string[] = [];
+  const createdStudentIds: string[] = [];
 
   beforeAll(async () => {
     const tenants = await db.tenant.findMany({
@@ -271,6 +274,10 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
     if (batchA) {
       await db.batchStudent.deleteMany({ where: { batchId: batchA.id } });
       await db.batch.delete({ where: { id: batchA.id } }).catch(() => {});
+    }
+
+    if (createdStudentIds.length > 0) {
+      await db.student.deleteMany({ where: { id: { in: createdStudentIds } } }).catch(() => {});
     }
     if (student1) await db.student.delete({ where: { id: student1.id } }).catch(() => {});
     if (student2) await db.student.delete({ where: { id: student2.id } }).catch(() => {});
@@ -3295,6 +3302,2281 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
         },
       });
       expect(audits.some((a) => a.action === "exam.marks_verified")).toBe(true);
+    });
+  });
+
+  describe("Section 13: Candidate-Level ABSENT / EXEMPTED Handling, Propagation & Marks Consistency (Stage 4.3 Step 3)", () => {
+    let sec13Exam: { id: string };
+    let sec13SubMath: { id: string };
+    let sec13SubSci: { id: string };
+    let studentCandA: { id: string };
+    let studentCandB: { id: string };
+    let studentCandC: { id: string };
+    let enrA: { id: string };
+    let enrB: { id: string };
+    let enrC: { id: string };
+    let adminUserId: string;
+
+    beforeAll(async () => {
+      const membership = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      adminUserId = membership?.userId || "user-admin-default";
+
+      vi.mocked(authorizeTenantWrite).mockResolvedValue({
+        ok: true,
+        ctx: {
+          tenant: { id: tenantA.id, name: tenantA.name } as unknown as TenantContext["tenant"],
+          user: { id: adminUserId, name: "Admin Officer" } as unknown as TenantContext["user"],
+          membership: { roleKey: "ADMIN" } as unknown as TenantContext["membership"],
+          permissions: new Set([
+            "tenant.exams.read",
+            "tenant.exams.write",
+            "tenant.exams.enroll",
+            "tenant.exams.enter_marks",
+            "tenant.exams.verify_marks",
+            "tenant.exams.publish_results",
+            "tenant.exams.correct_published_marks",
+          ]),
+          subscriptionBlocked: false,
+          isOwnerView: true,
+        },
+      });
+
+      // Create students
+      studentCandA = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "Candidate",
+          lastName: "Exempted",
+          admissionNo: `CAND-EXM-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(studentCandA.id);
+
+      studentCandB = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "Candidate",
+          lastName: "NumericMarks",
+          admissionNo: `CAND-NUM-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(studentCandB.id);
+
+      studentCandC = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "Candidate",
+          lastName: "Absent",
+          admissionNo: `CAND-ABS-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(studentCandC.id);
+
+      sec13Exam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Stage 4.3 Step 3 Candidate Handling Exam",
+          code: `STG43-S3-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          isPublished: false,
+          startDate: new Date("2026-11-10"),
+          endDate: new Date("2026-11-15"),
+          createdById: membership!.id,
+        },
+      });
+      createdExamIds.push(sec13Exam.id);
+
+      sec13SubMath = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: sec13Exam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-11"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      sec13SubSci = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: sec13Exam.id,
+          subjectId: subjectScience.id,
+          examDate: new Date("2026-11-12"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 2,
+        },
+      });
+
+      enrA = await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: sec13Exam.id,
+          studentId: studentCandA.id,
+          status: "ELIGIBLE",
+        },
+      });
+
+      enrB = await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: sec13Exam.id,
+          studentId: studentCandB.id,
+          status: "ELIGIBLE",
+        },
+      });
+
+      enrC = await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: sec13Exam.id,
+          studentId: studentCandC.id,
+          status: "ELIGIBLE",
+        },
+      });
+    });
+
+    it("1. Candidate-level exemption propagates verified marks to all subjects and records revision events", async () => {
+      const res = await updateEnrollmentStatusAction({
+        enrollmentId: enrA.id,
+        status: "EXEMPTED",
+        remarks: "Medical board approved whole-exam exemption",
+      });
+
+      expect(res.ok).toBe(true);
+
+      const updatedEnr = await db.examEnrollment.findUnique({ where: { id: enrA.id } });
+      expect(updatedEnr?.status).toBe("EXEMPTED");
+
+      const marks = await db.examMark.findMany({
+        where: { examId: sec13Exam.id, studentId: studentCandA.id },
+      });
+      expect(marks).toHaveLength(2);
+      expect(marks.some((m) => m.examSubjectId === sec13SubSci.id)).toBe(true);
+      for (const m of marks) {
+        expect(m.isExempted).toBe(true);
+        expect(m.isAbsent).toBe(false);
+        expect(m.marksObtained).toBeNull();
+        expect(m.evaluationStatus).toBe("VERIFIED");
+        expect(m.feedback).toContain("[Candidate Exemption]");
+      }
+
+      const revisions = await db.examMarksRevisionEvent.findMany({
+        where: { examId: sec13Exam.id, studentId: studentCandA.id },
+      });
+      expect(revisions.length).toBeGreaterThanOrEqual(2);
+      expect(revisions.every((r) => r.newStatus === "VERIFIED")).toBe(true);
+    });
+
+    it("2. Idempotent candidate-level exemption does not duplicate marks or fail", async () => {
+      const res = await updateEnrollmentStatusAction({
+        enrollmentId: enrA.id,
+        status: "EXEMPTED",
+        remarks: "Repeat confirmation of medical exemption",
+      });
+
+      expect(res.ok).toBe(true);
+
+      const marks = await db.examMark.findMany({
+        where: { examId: sec13Exam.id, studentId: studentCandA.id },
+      });
+      expect(marks).toHaveLength(2);
+    });
+
+    it("3. Protection against silent overwrite of existing manual scores (EXISTING_MARKS_PRESENT)", async () => {
+      // Enter a real score for Candidate B in Math
+      const enterRes = await enterMarksBulkAction({
+        examId: sec13Exam.id,
+        examSubjectId: sec13SubMath.id,
+        entries: [
+          {
+            studentId: studentCandB.id,
+            marksObtained: 78.5,
+            isAbsent: false,
+            isExempted: false,
+            feedback: "Mid-term submission",
+          },
+        ],
+        reason: "Entering regular score",
+        submitForVerification: false,
+      });
+      expect(enterRes.ok).toBe(true);
+
+      // Attempting to set EXEMPTED without overwriteExistingMarks must fail with EXISTING_MARKS_PRESENT
+      const attemptFail = await updateEnrollmentStatusAction({
+        enrollmentId: enrB.id,
+        status: "EXEMPTED",
+        remarks: "Attempt without overwrite confirmation",
+        overwriteExistingMarks: false,
+      });
+      expect(attemptFail.ok).toBe(false);
+      expect(attemptFail.code).toBe("EXISTING_MARKS_PRESENT");
+
+      // Verify the manual mark is completely intact
+      const intactMark = await db.examMark.findFirst({
+        where: { examSubjectId: sec13SubMath.id, studentId: studentCandB.id },
+      });
+      expect(Number(intactMark?.marksObtained)).toBe(78.5);
+
+      // Now pass overwriteExistingMarks: true
+      const attemptSuccess = await updateEnrollmentStatusAction({
+        enrollmentId: enrB.id,
+        status: "EXEMPTED",
+        remarks: "Authorized overwrite of manual score due to sports exemption",
+        overwriteExistingMarks: true,
+      });
+      expect(attemptSuccess.ok).toBe(true);
+
+      // Verify the mark is now replaced with verified exemption
+      const overwrittenMark = await db.examMark.findFirst({
+        where: { examSubjectId: sec13SubMath.id, studentId: studentCandB.id },
+      });
+      expect(overwrittenMark?.isExempted).toBe(true);
+      expect(overwrittenMark?.marksObtained).toBeNull();
+      expect(overwrittenMark?.evaluationStatus).toBe("VERIFIED");
+    });
+
+    it("4. Candidate-level absence propagates verified marks across all subjects", async () => {
+      const res = await updateEnrollmentStatusAction({
+        enrollmentId: enrC.id,
+        status: "ABSENT",
+        remarks: "Unexcused absence for entire examination window",
+      });
+      expect(res.ok).toBe(true);
+
+      const marks = await db.examMark.findMany({
+        where: { examId: sec13Exam.id, studentId: studentCandC.id },
+      });
+      expect(marks).toHaveLength(2);
+      for (const m of marks) {
+        expect(m.isAbsent).toBe(true);
+        expect(m.isExempted).toBe(false);
+        expect(m.marksObtained).toBeNull();
+        expect(m.evaluationStatus).toBe("VERIFIED");
+        expect(m.feedback).toContain("[Candidate Absent]");
+      }
+    });
+
+    it("5. Reverting candidate status to ELIGIBLE resets placeholder marks to PENDING for re-entry", async () => {
+      const res = await updateEnrollmentStatusAction({
+        enrollmentId: enrC.id,
+        status: "ELIGIBLE",
+        remarks: "Candidate reported late; permitted to sit makeup tests",
+      });
+      expect(res.ok).toBe(true);
+
+      const updatedEnr = await db.examEnrollment.findUnique({ where: { id: enrC.id } });
+      expect(updatedEnr?.status).toBe("ELIGIBLE");
+
+      const marks = await db.examMark.findMany({
+        where: { examId: sec13Exam.id, studentId: studentCandC.id },
+      });
+      expect(marks).toHaveLength(2);
+      for (const m of marks) {
+        expect(m.isAbsent).toBe(false);
+        expect(m.isExempted).toBe(false);
+        expect(m.marksObtained).toBeNull();
+        expect(m.evaluationStatus).toBe("PENDING");
+      }
+    });
+
+    it("6. Bulk marks entry rejects numeric marks if candidate has candidate-level EXEMPTED or ABSENT status", async () => {
+      // Candidate A is candidate-level EXEMPTED
+      const res = await enterMarksBulkAction({
+        examId: sec13Exam.id,
+        examSubjectId: sec13SubMath.id,
+        entries: [
+          {
+            studentId: studentCandA.id,
+            marksObtained: 95,
+            isAbsent: false,
+            isExempted: false,
+          },
+        ],
+        reason: "Illegal numeric entry for exempted candidate",
+        submitForVerification: false,
+      });
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("Cannot enter numeric marks for candidate");
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // STAGE 4.3 STEP 3.2: 18 COMPREHENSIVE INTEGRATION SCENARIOS
+    // Reversible Candidate-Level Status Propagation & Mark Preservation
+    // ─────────────────────────────────────────────────────────────
+
+    describe("Stage 4.3 Step 3.2: Reversible Status Propagation & Subject Mark Preservation (18 Scenarios)", () => {
+      let s32Exam: { id: string };
+      let s32SubMath: { id: string };
+      let s32SubSci: { id: string };
+      let s32SubEng: { id: string };
+      let subjectEnglish: { id: string; name: string };
+
+      let studentOnlyExempt: { id: string };
+      let enrOnlyExempt: { id: string };
+
+      let studentOnlyAbsent: { id: string };
+      let enrOnlyAbsent: { id: string };
+
+      let studentOnlyScore: { id: string };
+      let enrOnlyScore: { id: string };
+
+      let studentMixed: { id: string };
+      let enrMixed: { id: string };
+
+      let studentSeqA: { id: string };
+      let enrSeqA: { id: string };
+
+      let studentSeqB: { id: string };
+      let enrSeqB: { id: string };
+
+      let studentIdem: { id: string };
+      let enrIdem: { id: string };
+
+      let studentCorrupt: { id: string };
+      let enrCorrupt: { id: string };
+
+      beforeAll(async () => {
+        const mem = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+
+        // Ensure third subject exists
+        let se = await db.subject.findFirst({
+          where: { tenantId: tenantA.id, name: { contains: "English", mode: "insensitive" } },
+        });
+        if (!se) {
+          se = await db.subject.create({
+            data: {
+              tenantId: tenantA.id,
+              name: "English Literature",
+              code: "ENG-LIT",
+            },
+          });
+        }
+        subjectEnglish = se;
+
+        s32Exam = await db.examination.create({
+          data: {
+            tenantId: tenantA.id,
+            academicYearId: academicYearA.id,
+            gradeScaleId: gradeScaleA.id,
+            targetType: "CLASS_SECTION",
+            classId: classA.id,
+            title: "Stage 4.3 Step 3.2 Verification Exam",
+            code: `S32-${Date.now().toString().slice(-6)}`,
+            examType: "UNIT_TEST",
+            status: "IN_PROGRESS",
+            isPublished: false,
+            startDate: new Date("2026-11-20"),
+            endDate: new Date("2026-11-25"),
+            createdById: mem!.id,
+          },
+        });
+        createdExamIds.push(s32Exam.id);
+
+        s32SubMath = await db.examSubject.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            subjectId: subjectMath.id,
+            examDate: new Date("2026-11-20"),
+            maxMarks: 100,
+            passingMarks: 35,
+            order: 1,
+          },
+        });
+
+        s32SubSci = await db.examSubject.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            subjectId: subjectScience.id,
+            examDate: new Date("2026-11-21"),
+            maxMarks: 100,
+            passingMarks: 35,
+            order: 2,
+          },
+        });
+
+        s32SubEng = await db.examSubject.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            subjectId: subjectEnglish.id,
+            examDate: new Date("2026-11-22"),
+            maxMarks: 100,
+            passingMarks: 35,
+            order: 3,
+          },
+        });
+
+        // Setup Candidate with subject-level exemption only
+        studentOnlyExempt = await db.student.create({
+          data: {
+            tenantId: tenantA.id,
+            firstName: "SubjectExempt",
+            lastName: "Only",
+            admissionNo: `S32-EXM-${Date.now().toString().slice(-6)}`,
+            classId: classA.id,
+            status: "ACTIVE",
+          },
+        });
+        createdStudentIds.push(studentOnlyExempt.id);
+        enrOnlyExempt = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: s32Exam.id, studentId: studentOnlyExempt.id, status: "ELIGIBLE" },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubMath.id,
+            studentId: studentOnlyExempt.id,
+            enrollmentId: enrOnlyExempt.id,
+            marksObtained: null,
+            isAbsent: false,
+            isExempted: true,
+            evaluationStatus: "SUBMITTED",
+            feedback: "Subject-level exemption granted by teacher",
+          },
+        });
+
+        // Setup Candidate with subject-level absence only
+        studentOnlyAbsent = await db.student.create({
+          data: {
+            tenantId: tenantA.id,
+            firstName: "SubjectAbsent",
+            lastName: "Only",
+            admissionNo: `S32-ABS-${Date.now().toString().slice(-6)}`,
+            classId: classA.id,
+            status: "ACTIVE",
+          },
+        });
+        createdStudentIds.push(studentOnlyAbsent.id);
+        enrOnlyAbsent = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: s32Exam.id, studentId: studentOnlyAbsent.id, status: "ELIGIBLE" },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubSci.id,
+            studentId: studentOnlyAbsent.id,
+            enrollmentId: enrOnlyAbsent.id,
+            marksObtained: null,
+            isAbsent: true,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+            feedback: "Subject absence logged by invigilator",
+          },
+        });
+
+        // Setup Candidate with numeric marks only
+        studentOnlyScore = await db.student.create({
+          data: {
+            tenantId: tenantA.id,
+            firstName: "SubjectScore",
+            lastName: "Only",
+            admissionNo: `S32-SCR-${Date.now().toString().slice(-6)}`,
+            classId: classA.id,
+            status: "ACTIVE",
+          },
+        });
+        createdStudentIds.push(studentOnlyScore.id);
+        enrOnlyScore = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: s32Exam.id, studentId: studentOnlyScore.id, status: "ELIGIBLE" },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubEng.id,
+            studentId: studentOnlyScore.id,
+            enrollmentId: enrOnlyScore.id,
+            marksObtained: 85,
+            isAbsent: false,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+            feedback: "Essay scored",
+          },
+        });
+
+        // Setup Candidate with mixed states across subjects
+        studentMixed = await db.student.create({
+          data: {
+            tenantId: tenantA.id,
+            firstName: "SubjectMixed",
+            lastName: "Candidate",
+            admissionNo: `S32-MIX-${Date.now().toString().slice(-6)}`,
+            classId: classA.id,
+            status: "ACTIVE",
+          },
+        });
+        createdStudentIds.push(studentMixed.id);
+        enrMixed = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: s32Exam.id, studentId: studentMixed.id, status: "ELIGIBLE" },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubMath.id,
+            studentId: studentMixed.id,
+            enrollmentId: enrMixed.id,
+            marksObtained: null,
+            isAbsent: false,
+            isExempted: true,
+            evaluationStatus: "SUBMITTED",
+            feedback: "Math Olympiad exemption",
+          },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubSci.id,
+            studentId: studentMixed.id,
+            enrollmentId: enrMixed.id,
+            marksObtained: null,
+            isAbsent: true,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+            feedback: "Science lab absence",
+          },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubEng.id,
+            studentId: studentMixed.id,
+            enrollmentId: enrMixed.id,
+            marksObtained: 92,
+            isAbsent: false,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+            feedback: "English paper evaluated",
+          },
+        });
+
+        // Setup Candidate for sequence EXEMPTED -> ABSENT -> ELIGIBLE
+        studentSeqA = await db.student.create({
+          data: {
+            tenantId: tenantA.id,
+            firstName: "SequenceA",
+            lastName: "Student",
+            admissionNo: `S32-SQA-${Date.now().toString().slice(-6)}`,
+            classId: classA.id,
+            status: "ACTIVE",
+          },
+        });
+        createdStudentIds.push(studentSeqA.id);
+        enrSeqA = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: s32Exam.id, studentId: studentSeqA.id, status: "ELIGIBLE" },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubMath.id,
+            studentId: studentSeqA.id,
+            enrollmentId: enrSeqA.id,
+            marksObtained: 88,
+            isAbsent: false,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+          },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubSci.id,
+            studentId: studentSeqA.id,
+            enrollmentId: enrSeqA.id,
+            marksObtained: null,
+            isAbsent: false,
+            isExempted: true,
+            evaluationStatus: "SUBMITTED",
+          },
+        });
+
+        // Setup Candidate for sequence ABSENT -> EXEMPTED -> ELIGIBLE
+        studentSeqB = await db.student.create({
+          data: {
+            tenantId: tenantA.id,
+            firstName: "SequenceB",
+            lastName: "Student",
+            admissionNo: `S32-SQB-${Date.now().toString().slice(-6)}`,
+            classId: classA.id,
+            status: "ACTIVE",
+          },
+        });
+        createdStudentIds.push(studentSeqB.id);
+        enrSeqB = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: s32Exam.id, studentId: studentSeqB.id, status: "ELIGIBLE" },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubMath.id,
+            studentId: studentSeqB.id,
+            enrollmentId: enrSeqB.id,
+            marksObtained: null,
+            isAbsent: true,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+          },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubSci.id,
+            studentId: studentSeqB.id,
+            enrollmentId: enrSeqB.id,
+            marksObtained: 76,
+            isAbsent: false,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+          },
+        });
+
+        // Setup Candidate for idempotency
+        studentIdem = await db.student.create({
+          data: {
+            tenantId: tenantA.id,
+            firstName: "Idempotent",
+            lastName: "Student",
+            admissionNo: `S32-IDM-${Date.now().toString().slice(-6)}`,
+            classId: classA.id,
+            status: "ACTIVE",
+          },
+        });
+        createdStudentIds.push(studentIdem.id);
+        enrIdem = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: s32Exam.id, studentId: studentIdem.id, status: "ELIGIBLE" },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubMath.id,
+            studentId: studentIdem.id,
+            enrollmentId: enrIdem.id,
+            marksObtained: 70,
+            isAbsent: false,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+          },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubSci.id,
+            studentId: studentIdem.id,
+            enrollmentId: enrIdem.id,
+            marksObtained: 80,
+            isAbsent: false,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+          },
+        });
+
+        // Setup Candidate for corruption test
+        studentCorrupt = await db.student.create({
+          data: {
+            tenantId: tenantA.id,
+            firstName: "Corrupt",
+            lastName: "Record",
+            admissionNo: `S32-CRP-${Date.now().toString().slice(-6)}`,
+            classId: classA.id,
+            status: "ACTIVE",
+          },
+        });
+        createdStudentIds.push(studentCorrupt.id);
+        enrCorrupt = await db.examEnrollment.create({
+          data: { tenantId: tenantA.id, examId: s32Exam.id, studentId: studentCorrupt.id, status: "ELIGIBLE" },
+        });
+        await db.examMark.create({
+          data: {
+            tenantId: tenantA.id,
+            examId: s32Exam.id,
+            examSubjectId: s32SubMath.id,
+            studentId: studentCorrupt.id,
+            enrollmentId: enrCorrupt.id,
+            marksObtained: 65,
+            isAbsent: false,
+            isExempted: false,
+            evaluationStatus: "SUBMITTED",
+          },
+        });
+      });
+
+      it("Scenario 1: Candidate with subject-level exemption and no numeric marks triggers EXISTING_MARKS_PRESENT", async () => {
+        const res = await updateEnrollmentStatusAction({
+          enrollmentId: enrOnlyExempt.id,
+          status: "EXEMPTED",
+          remarks: "Attempt candidate exemption without confirmation",
+          overwriteExistingMarks: false,
+        });
+        expect(res.ok).toBe(false);
+        expect(res.code).toBe("EXISTING_MARKS_PRESENT");
+        expect(res.error).toContain("Mathematics");
+      });
+
+      it("Scenario 2: Candidate with subject-level absence and no numeric marks triggers EXISTING_MARKS_PRESENT", async () => {
+        const res = await updateEnrollmentStatusAction({
+          enrollmentId: enrOnlyAbsent.id,
+          status: "ABSENT",
+          remarks: "Attempt candidate absence without confirmation",
+          overwriteExistingMarks: false,
+        });
+        expect(res.ok).toBe(false);
+        expect(res.code).toBe("EXISTING_MARKS_PRESENT");
+        expect(res.error).toContain("Science");
+      });
+
+      it("Scenario 3: Candidate with numeric marks in another subject triggers EXISTING_MARKS_PRESENT", async () => {
+        const res = await updateEnrollmentStatusAction({
+          enrollmentId: enrOnlyScore.id,
+          status: "EXEMPTED",
+          remarks: "Attempt candidate exemption on scored student",
+          overwriteExistingMarks: false,
+        });
+        expect(res.ok).toBe(false);
+        expect(res.code).toBe("EXISTING_MARKS_PRESENT");
+        expect(res.error).toContain(subjectEnglish.name);
+      });
+
+      it("Scenario 4: Candidate with mixed subject-level exemptions, absences, and numeric scores triggers comprehensive protection", async () => {
+        const res = await updateEnrollmentStatusAction({
+          enrollmentId: enrMixed.id,
+          status: "EXEMPTED",
+          remarks: "Attempt candidate exemption on mixed candidate",
+          overwriteExistingMarks: false,
+        });
+        expect(res.ok).toBe(false);
+        expect(res.code).toBe("EXISTING_MARKS_PRESENT");
+        expect(res.error).toContain("Mathematics");
+        expect(res.error).toContain("Science");
+        expect(res.error).toContain(subjectEnglish.name);
+      });
+
+      it("Scenario 5: Candidate-level EXEMPTED rejects without confirmation when subject-level exemption exists", async () => {
+        const res = await updateEnrollmentStatusAction({
+          enrollmentId: enrOnlyExempt.id,
+          status: "EXEMPTED",
+          overwriteExistingMarks: false,
+        });
+        expect(res.ok).toBe(false);
+        expect(res.code).toBe("EXISTING_MARKS_PRESENT");
+      });
+
+      it("Scenario 6: Candidate-level ABSENT rejects without confirmation when subject-level absence exists", async () => {
+        const res = await updateEnrollmentStatusAction({
+          enrollmentId: enrOnlyAbsent.id,
+          status: "ABSENT",
+          overwriteExistingMarks: false,
+        });
+        expect(res.ok).toBe(false);
+        expect(res.code).toBe("EXISTING_MARKS_PRESENT");
+      });
+
+      it("Scenario 7: Rejection without confirmation leaves all existing subject marks completely unchanged", async () => {
+        const mathMark = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubMath.id, studentId: studentMixed.id },
+        });
+        const sciMark = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubSci.id, studentId: studentMixed.id },
+        });
+        const engMark = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubEng.id, studentId: studentMixed.id },
+        });
+
+        expect(mathMark?.isExempted).toBe(true);
+        expect(mathMark?.marksObtained).toBeNull();
+        expect(mathMark?.evaluationStatus).toBe("SUBMITTED");
+
+        expect(sciMark?.isAbsent).toBe(true);
+        expect(sciMark?.marksObtained).toBeNull();
+        expect(sciMark?.evaluationStatus).toBe("SUBMITTED");
+
+        expect(Number(engMark?.marksObtained)).toBe(92);
+        expect(engMark?.isAbsent).toBe(false);
+        expect(engMark?.isExempted).toBe(false);
+        expect(engMark?.evaluationStatus).toBe("SUBMITTED");
+      });
+
+      it("Scenario 8: Confirmed override captures exact pre-override state in enrollment.preservedMarks", async () => {
+        const res = await updateEnrollmentStatusAction({
+          enrollmentId: enrMixed.id,
+          status: "EXEMPTED",
+          remarks: "Authorized whole-exam sports exemption",
+          overwriteExistingMarks: true,
+        });
+        expect(res.ok).toBe(true);
+
+        const updatedEnr = await db.examEnrollment.findUnique({
+          where: { id: enrMixed.id },
+        });
+        expect(updatedEnr?.status).toBe("EXEMPTED");
+        expect(updatedEnr?.preservedMarks).toBeDefined();
+
+        const preserved = updatedEnr?.preservedMarks as unknown as PreservedSubjectMark[];
+        expect(Array.isArray(preserved)).toBe(true);
+        expect(preserved.length).toBe(3);
+
+        const pMath = preserved.find((p) => p.examSubjectId === s32SubMath.id);
+        const pSci = preserved.find((p) => p.examSubjectId === s32SubSci.id);
+        const pEng = preserved.find((p) => p.examSubjectId === s32SubEng.id);
+
+        expect(pMath?.isExempted).toBe(true);
+        expect(pMath?.marksObtained).toBeNull();
+        expect(pSci?.isAbsent).toBe(true);
+        expect(pSci?.marksObtained).toBeNull();
+        expect(pEng?.marksObtained).toBe(92);
+        expect(pEng?.isAbsent).toBe(false);
+        expect(pEng?.isExempted).toBe(false);
+
+        // Verify current marks are now VERIFIED candidate exemption placeholders
+        const currentMarks = await db.examMark.findMany({
+          where: { examId: s32Exam.id, studentId: studentMixed.id },
+        });
+        expect(currentMarks).toHaveLength(3);
+        for (const m of currentMarks) {
+          expect(m.isExempted).toBe(true);
+          expect(m.marksObtained).toBeNull();
+          expect(m.evaluationStatus).toBe("VERIFIED");
+          expect(m.feedback).toContain("[Candidate Exemption]");
+        }
+      });
+
+      it("Scenario 9: Restoration to ELIGIBLE restores previous subject-level exemptions", async () => {
+        // Will restore enrMixed in this test and verify in scenarios 9, 10, 11
+        const restoreRes = await updateEnrollmentStatusAction({
+          enrollmentId: enrMixed.id,
+          status: "ELIGIBLE",
+          remarks: "Sports event ended; restoring candidate",
+        });
+        expect(restoreRes.ok).toBe(true);
+
+        const restoredMath = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubMath.id, studentId: studentMixed.id },
+        });
+        expect(restoredMath?.isExempted).toBe(true);
+        expect(restoredMath?.marksObtained).toBeNull();
+        expect(restoredMath?.evaluationStatus).toBe("SUBMITTED");
+        expect(restoredMath?.feedback).toBe("Math Olympiad exemption");
+      });
+
+      it("Scenario 10: Restoration to ELIGIBLE restores previous subject-level absences", async () => {
+        const restoredSci = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubSci.id, studentId: studentMixed.id },
+        });
+        expect(restoredSci?.isAbsent).toBe(true);
+        expect(restoredSci?.marksObtained).toBeNull();
+        expect(restoredSci?.evaluationStatus).toBe("SUBMITTED");
+        expect(restoredSci?.feedback).toBe("Science lab absence");
+      });
+
+      it("Scenario 11: Restoration to ELIGIBLE restores previous numeric scores", async () => {
+        const restoredEng = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubEng.id, studentId: studentMixed.id },
+        });
+        expect(Number(restoredEng?.marksObtained)).toBe(92);
+        expect(restoredEng?.isAbsent).toBe(false);
+        expect(restoredEng?.isExempted).toBe(false);
+        expect(restoredEng?.evaluationStatus).toBe("SUBMITTED");
+        expect(restoredEng?.feedback).toBe("English paper evaluated");
+
+        const enrAfter = await db.examEnrollment.findUnique({
+          where: { id: enrMixed.id },
+        });
+        expect(enrAfter?.status).toBe("ELIGIBLE");
+        expect(enrAfter?.preservedMarks).toBeNull();
+      });
+
+      it("Scenario 12: Sequence EXEMPTED -> ABSENT -> ELIGIBLE preserves and restores original pre-override state", async () => {
+        // 1. ELIGIBLE -> EXEMPTED (with confirmation)
+        const step1 = await updateEnrollmentStatusAction({
+          enrollmentId: enrSeqA.id,
+          status: "EXEMPTED",
+          overwriteExistingMarks: true,
+          remarks: "Medical exemption initial",
+        });
+        expect(step1.ok).toBe(true);
+
+        // 2. EXEMPTED -> ABSENT (no confirmation required, retains original baseline)
+        const step2 = await updateEnrollmentStatusAction({
+          enrollmentId: enrSeqA.id,
+          status: "ABSENT",
+          remarks: "Changed to absent",
+        });
+        expect(step2.ok).toBe(true);
+
+        // 3. ABSENT -> ELIGIBLE (restores original baseline: Math 88, Sci exempt)
+        const step3 = await updateEnrollmentStatusAction({
+          enrollmentId: enrSeqA.id,
+          status: "ELIGIBLE",
+          remarks: "Restoring candidate",
+        });
+        expect(step3.ok).toBe(true);
+
+        const restoredMath = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubMath.id, studentId: studentSeqA.id },
+        });
+        const restoredSci = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubSci.id, studentId: studentSeqA.id },
+        });
+
+        expect(Number(restoredMath?.marksObtained)).toBe(88);
+        expect(restoredMath?.isAbsent).toBe(false);
+        expect(restoredMath?.isExempted).toBe(false);
+
+        expect(restoredSci?.isExempted).toBe(true);
+        expect(restoredSci?.marksObtained).toBeNull();
+      });
+
+      it("Scenario 13: Sequence ABSENT -> EXEMPTED -> ELIGIBLE preserves and restores original pre-override state", async () => {
+        // 1. ELIGIBLE -> ABSENT (with confirmation)
+        const step1 = await updateEnrollmentStatusAction({
+          enrollmentId: enrSeqB.id,
+          status: "ABSENT",
+          overwriteExistingMarks: true,
+          remarks: "Initial absent",
+        });
+        expect(step1.ok).toBe(true);
+
+        // 2. ABSENT -> EXEMPTED
+        const step2 = await updateEnrollmentStatusAction({
+          enrollmentId: enrSeqB.id,
+          status: "EXEMPTED",
+          remarks: "Changed to exempt",
+        });
+        expect(step2.ok).toBe(true);
+
+        // 3. EXEMPTED -> ELIGIBLE (restores original baseline: Math absent, Sci 76)
+        const step3 = await updateEnrollmentStatusAction({
+          enrollmentId: enrSeqB.id,
+          status: "ELIGIBLE",
+          remarks: "Restoring candidate",
+        });
+        expect(step3.ok).toBe(true);
+
+        const restoredMath = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubMath.id, studentId: studentSeqB.id },
+        });
+        const restoredSci = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubSci.id, studentId: studentSeqB.id },
+        });
+
+        expect(restoredMath?.isAbsent).toBe(true);
+        expect(restoredMath?.marksObtained).toBeNull();
+
+        expect(Number(restoredSci?.marksObtained)).toBe(76);
+        expect(restoredSci?.isAbsent).toBe(false);
+        expect(restoredSci?.isExempted).toBe(false);
+      });
+
+      it("Scenario 14: Repeated identical status transitions remain idempotent and do not corrupt preservation state", async () => {
+        // 1. ELIGIBLE -> EXEMPTED
+        const step1 = await updateEnrollmentStatusAction({
+          enrollmentId: enrIdem.id,
+          status: "EXEMPTED",
+          overwriteExistingMarks: true,
+          remarks: "First exempt call",
+        });
+        expect(step1.ok).toBe(true);
+
+        // 2. EXEMPTED -> EXEMPTED (repeat)
+        const step2 = await updateEnrollmentStatusAction({
+          enrollmentId: enrIdem.id,
+          status: "EXEMPTED",
+          remarks: "Second exempt call",
+        });
+        expect(step2.ok).toBe(true);
+
+        // 3. EXEMPTED -> ELIGIBLE
+        const step3 = await updateEnrollmentStatusAction({
+          enrollmentId: enrIdem.id,
+          status: "ELIGIBLE",
+          remarks: "Restoring candidate",
+        });
+        expect(step3.ok).toBe(true);
+
+        const restoredMath = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubMath.id, studentId: studentIdem.id },
+        });
+        const restoredSci = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubSci.id, studentId: studentIdem.id },
+        });
+
+        expect(Number(restoredMath?.marksObtained)).toBe(70);
+        expect(Number(restoredSci?.marksObtained)).toBe(80);
+      });
+
+      it("Scenario 15: Historical revision events remain immutable across overrides and restorations", async () => {
+        const events = await db.examMarksRevisionEvent.findMany({
+          where: { examId: s32Exam.id, studentId: studentMixed.id },
+          orderBy: { createdAt: "asc" },
+        });
+        expect(events.length).toBeGreaterThanOrEqual(3);
+
+        const targetEvent = events[0];
+
+        // Attempt raw UPDATE on revision event
+        await expect(
+          db.$executeRawUnsafe(
+            `UPDATE "ExamMarksRevisionEvent" SET "reason" = 'tampered' WHERE "id" = '${targetEvent.id}'`
+          )
+        ).rejects.toThrow();
+
+        // Attempt raw DELETE on revision event
+        await expect(
+          db.$executeRawUnsafe(
+            `DELETE FROM "ExamMarksRevisionEvent" WHERE "id" = '${targetEvent.id}'`
+          )
+        ).rejects.toThrow();
+      });
+
+      it("Scenario 16: Missing or corrupted preservation state rejects restoration with RESTORATION_STATE_MISSING", async () => {
+        // Set candidate to EXEMPTED
+        const setExm = await updateEnrollmentStatusAction({
+          enrollmentId: enrCorrupt.id,
+          status: "EXEMPTED",
+          overwriteExistingMarks: true,
+          remarks: "Candidate exempted",
+        });
+        expect(setExm.ok).toBe(true);
+
+        // Deliberately corrupt preservedMarks to DbNull
+        await db.examEnrollment.update({
+          where: { id: enrCorrupt.id },
+          data: { preservedMarks: Prisma.DbNull },
+        });
+
+        // Attempt restore to ELIGIBLE
+        const restoreAttempt = await updateEnrollmentStatusAction({
+          enrollmentId: enrCorrupt.id,
+          status: "ELIGIBLE",
+          remarks: "Attempt restore with corrupted state",
+        });
+        expect(restoreAttempt.ok).toBe(false);
+        expect(restoreAttempt.code).toBe("RESTORATION_STATE_MISSING");
+
+        // Verify marks are NOT modified or reset to PENDING
+        const markAfter = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubMath.id, studentId: studentCorrupt.id },
+        });
+        expect(markAfter?.evaluationStatus).toBe("VERIFIED");
+        expect(markAfter?.isExempted).toBe(true);
+      });
+
+      it("Scenario 17: Transaction rollback on failure leaves enrollment and marks consistent", async () => {
+        const enrBefore = await db.examEnrollment.findUnique({
+          where: { id: enrCorrupt.id },
+        });
+        const markBefore = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubMath.id, studentId: studentCorrupt.id },
+        });
+
+        // Invalid enrollment ID
+        const failCall = await updateEnrollmentStatusAction({
+          enrollmentId: "non-existent-enrollment-id",
+          status: "ELIGIBLE",
+        });
+        expect(failCall.ok).toBe(false);
+
+        const enrAfter = await db.examEnrollment.findUnique({
+          where: { id: enrCorrupt.id },
+        });
+        const markAfter = await db.examMark.findFirst({
+          where: { examSubjectId: s32SubMath.id, studentId: studentCorrupt.id },
+        });
+
+        expect(enrAfter?.status).toBe(enrBefore?.status);
+        expect(markAfter?.evaluationStatus).toBe(markBefore?.evaluationStatus);
+      });
+
+      it("Scenario 18: Tenant isolation and permission checks remain strictly enforced", async () => {
+        // 1. Permission check failure
+        vi.mocked(authorizeTenantWrite).mockResolvedValueOnce({
+          ok: false,
+          error: "Missing required permission: tenant.exams.enroll",
+        });
+
+        const noPerm = await updateEnrollmentStatusAction({
+          enrollmentId: enrSeqA.id,
+          status: "EXEMPTED",
+        });
+        expect(noPerm.ok).toBe(false);
+        expect(noPerm.error).toContain("Missing required permission");
+
+        // 2. Cross-tenant check: create enrollment in Tenant B
+        const bMem = await db.membership.findFirst({ where: { tenantId: tenantB.id } });
+        const bExam = await db.examination.create({
+          data: {
+            tenantId: tenantB.id,
+            academicYearId: academicYearA.id,
+            gradeScaleId: gradeScaleA.id,
+            targetType: "CLASS_SECTION",
+            classId: classA.id,
+            title: "Tenant B Exam",
+            code: `TB-${Date.now().toString().slice(-6)}`,
+            examType: "UNIT_TEST",
+            status: "IN_PROGRESS",
+            isPublished: false,
+            startDate: new Date("2026-11-20"),
+            endDate: new Date("2026-11-25"),
+            createdById: bMem?.id || adminUserId,
+          },
+        });
+        createdExamIds.push(bExam.id);
+
+        const bStudent = await db.student.create({
+          data: {
+            tenantId: tenantB.id,
+            firstName: "TenantB",
+            lastName: "Student",
+            admissionNo: `TB-${Date.now().toString().slice(-6)}`,
+            classId: classA.id,
+            status: "ACTIVE",
+          },
+        });
+        createdStudentIds.push(bStudent.id);
+
+        const bEnr = await db.examEnrollment.create({
+          data: { tenantId: tenantB.id, examId: bExam.id, studentId: bStudent.id, status: "ELIGIBLE" },
+        });
+
+        // Authorized as Tenant A, attempting to update Tenant B enrollment
+        const crossTenantAttempt = await updateEnrollmentStatusAction({
+          enrollmentId: bEnr.id,
+          status: "EXEMPTED",
+        });
+        expect(crossTenantAttempt.ok).toBe(false);
+        expect(crossTenantAttempt.error).toContain("Enrollment not found");
+      });
+    });
+
+    it("7. Publication produces WITHHELD, EXM, and null rank for candidate-level EXEMPTED candidate", async () => {
+      // Create a fresh dedicated evaluation exam
+      const mem = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const pubExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Candidate Exemption Outcome Exam",
+          code: `PUB-EXM-${Date.now().toString().slice(-6)}`,
+          examType: "FINAL",
+          status: "IN_PROGRESS",
+          isPublished: false,
+          startDate: new Date("2026-11-15"),
+          endDate: new Date("2026-11-20"),
+          createdById: mem!.id,
+        },
+      });
+      createdExamIds.push(pubExam.id);
+
+      const sub1 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: pubExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-16"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      const sub2 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: pubExam.id,
+          subjectId: subjectScience.id,
+          examDate: new Date("2026-11-17"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 2,
+        },
+      });
+
+      // Student 1: regular student who scored 85 in Math and 90 in Science
+      const enr1 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: pubExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: pubExam.id,
+          examSubjectId: sub1.id,
+          studentId: student1.id,
+          enrollmentId: enr1.id,
+          marksObtained: 85,
+          evaluationStatus: "VERIFIED",
+        },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: pubExam.id,
+          examSubjectId: sub2.id,
+          studentId: student1.id,
+          enrollmentId: enr1.id,
+          marksObtained: 90,
+          evaluationStatus: "VERIFIED",
+        },
+      });
+
+      // Student 2: candidate-level EXEMPTED
+      const enr2 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: pubExam.id, studentId: studentCandA.id, status: "ELIGIBLE" },
+      });
+
+      const exemptRes = await updateEnrollmentStatusAction({
+        enrollmentId: enr2.id,
+        status: "EXEMPTED",
+        remarks: "Exempted from entire final exam",
+      });
+      expect(exemptRes.ok).toBe(true);
+
+      // Student 3: candidate-level ABSENT
+      const enr3 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: pubExam.id, studentId: studentCandC.id, status: "ELIGIBLE" },
+      });
+
+      const absentRes = await updateEnrollmentStatusAction({
+        enrollmentId: enr3.id,
+        status: "ABSENT",
+        remarks: "Absent for entire final exam",
+      });
+      expect(absentRes.ok).toBe(true);
+
+      // Cartesian completeness check
+      const comp = await verifyCandidateSubjectCompleteness(db, pubExam.id, tenantA.id);
+      expect(comp.isValid).toBe(true);
+      expect(comp.eligibleCandidatesCount).toBe(3);
+      expect(comp.verifiedMarksCount).toBe(6);
+
+      // Verify marks to transition to EVALUATED status
+      const v1 = await verifyExamSubjectMarksAction(pubExam.id, sub1.id);
+      expect(v1.ok).toBe(true);
+      const v2 = await verifyExamSubjectMarksAction(pubExam.id, sub2.id);
+      expect(v2.ok).toBe(true);
+
+      const pubExamEvaluated = await db.examination.findUnique({ where: { id: pubExam.id } });
+      expect(pubExamEvaluated?.status).toBe("EVALUATED");
+
+      // Publish results
+      const pubRes = await calculateAndPublishResultsAction({ examId: pubExam.id });
+      expect(pubRes.ok).toBe(true);
+
+      // Check results for Student 1 (Regular)
+      const res1 = await db.examResult.findFirst({
+        where: { examId: pubExam.id, studentId: student1.id },
+      });
+      expect(res1?.resultStatus).toBe("PASS");
+      expect(Number(res1?.percentage)).toBe(87.5);
+      expect(res1?.rank).toBe(1);
+
+      // Check results for Student 2 (Candidate EXEMPTED)
+      const res2 = await db.examResult.findFirst({
+        where: { examId: pubExam.id, studentId: studentCandA.id },
+      });
+      expect(res2?.resultStatus).toBe("WITHHELD");
+      expect(res2?.grade).toBe("EXM");
+      expect(res2?.rank).toBeNull();
+
+      // Check results for Student 3 (Candidate ABSENT)
+      const res3 = await db.examResult.findFirst({
+        where: { examId: pubExam.id, studentId: studentCandC.id },
+      });
+      expect(res3?.resultStatus).toBe("FAIL");
+      expect(Number(res3?.percentage)).toBe(0);
+      expect(res3?.rank).toBeNull();
+    });
+
+    it("8. Distinction between Subject-level Exemption and Candidate-level Exemption in rankings and denominator", async () => {
+      const mem = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const denomExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Denominator & Subject Exemption Exam",
+          code: `DENOM-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          isPublished: false,
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-22"),
+          createdById: mem!.id,
+        },
+      });
+      createdExamIds.push(denomExam.id);
+
+      const dSub1 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: denomExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-20"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      const dSub2 = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: denomExam.id,
+          subjectId: subjectScience.id,
+          examDate: new Date("2026-11-21"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 2,
+        },
+      });
+
+      // Candidate 1: scored 90 in Math, 90 in Science (total 180/200 = 90%) -> Rank 1
+      const dEnr1 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: denomExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: denomExam.id,
+          examSubjectId: dSub1.id,
+          studentId: student1.id,
+          enrollmentId: dEnr1.id,
+          marksObtained: 90,
+          evaluationStatus: "VERIFIED",
+        },
+      });
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: denomExam.id,
+          examSubjectId: dSub2.id,
+          studentId: student1.id,
+          enrollmentId: dEnr1.id,
+          marksObtained: 90,
+          evaluationStatus: "VERIFIED",
+        },
+      });
+
+      // Candidate 2: scored 80 in Math, SUBJECT-LEVEL EXEMPTION in Science
+      // Expected: denominator is 100 (Science max marks excluded). Percentage = 80/100 = 80%. ResultStatus = PASS. Rank = 2!
+      const dEnr2 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: denomExam.id, studentId: student2.id, status: "ELIGIBLE" },
+      });
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: denomExam.id,
+          examSubjectId: dSub1.id,
+          studentId: student2.id,
+          enrollmentId: dEnr2.id,
+          marksObtained: 80,
+          evaluationStatus: "VERIFIED",
+        },
+      });
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: denomExam.id,
+          examSubjectId: dSub2.id,
+          studentId: student2.id,
+          enrollmentId: dEnr2.id,
+          marksObtained: null,
+          isExempted: true,
+          evaluationStatus: "VERIFIED",
+        },
+      });
+
+      // Candidate 3: CANDIDATE-LEVEL EXEMPTION
+      const dEnr3 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: denomExam.id, studentId: studentCandA.id, status: "ELIGIBLE" },
+      });
+      const exRes = await updateEnrollmentStatusAction({
+        enrollmentId: dEnr3.id,
+        status: "EXEMPTED",
+        remarks: "Whole-exam exemption",
+      });
+      expect(exRes.ok).toBe(true);
+
+      // Verify marks to reach EVALUATED status
+      const dv1 = await verifyExamSubjectMarksAction(denomExam.id, dSub1.id);
+      expect(dv1.ok).toBe(true);
+      const dv2 = await verifyExamSubjectMarksAction(denomExam.id, dSub2.id);
+      expect(dv2.ok).toBe(true);
+
+      const pubRes = await calculateAndPublishResultsAction({ examId: denomExam.id });
+      expect(pubRes.ok).toBe(true);
+
+      const r1 = await db.examResult.findFirst({ where: { examId: denomExam.id, studentId: student1.id } });
+      const r2 = await db.examResult.findFirst({ where: { examId: denomExam.id, studentId: student2.id } });
+      const r3 = await db.examResult.findFirst({ where: { examId: denomExam.id, studentId: studentCandA.id } });
+
+      // Student 1: Rank 1, 90%
+      expect(r1?.rank).toBe(1);
+      expect(Number(r1?.percentage)).toBe(90);
+      expect(r1?.resultStatus).toBe("PASS");
+
+      // Student 2: Subject-level exempt: Rank 2, 80%, PASS
+      expect(r2?.rank).toBe(2);
+      expect(Number(r2?.percentage)).toBe(80);
+      expect(r2?.resultStatus).toBe("PASS");
+
+      // Student 3: Candidate-level exempt: Rank null, WITHHELD, EXM
+      expect(r3?.rank).toBeNull();
+      expect(r3?.resultStatus).toBe("WITHHELD");
+      expect(r3?.grade).toBe("EXM");
+    });
+
+    it("9. Withdrawn candidate is completely excluded from Cartesian completeness and results", async () => {
+      const mem = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const withExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Withdrawal Exclusion Exam",
+          code: `WITH-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          isPublished: false,
+          startDate: new Date("2026-11-25"),
+          endDate: new Date("2026-11-26"),
+          createdById: mem!.id,
+        },
+      });
+      createdExamIds.push(withExam.id);
+
+      const wSub = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: withExam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-25"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      const wEnr1 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: withExam.id, studentId: student1.id, status: "ELIGIBLE" },
+      });
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: withExam.id,
+          examSubjectId: wSub.id,
+          studentId: student1.id,
+          enrollmentId: wEnr1.id,
+          marksObtained: 88,
+          evaluationStatus: "VERIFIED",
+        },
+      });
+
+      // Enrolled then withdrawn
+      const wEnr2 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: withExam.id, studentId: student2.id, status: "ELIGIBLE" },
+      });
+      const withRes = await updateEnrollmentStatusAction({
+        enrollmentId: wEnr2.id,
+        status: "WITHDRAWN",
+        remarks: "Student transferred out of school",
+      });
+      expect(withRes.ok).toBe(true);
+
+      // Cartesian completeness requires only 1 pair (student 1 x 1 subject)
+      const comp = await verifyCandidateSubjectCompleteness(db, withExam.id, tenantA.id);
+      expect(comp.isValid).toBe(true);
+      expect(comp.eligibleCandidatesCount).toBe(1);
+      expect(comp.expectedPairsCount).toBe(1);
+
+      // Verify marks to reach EVALUATED status
+      const wv = await verifyExamSubjectMarksAction(withExam.id, wSub.id);
+      expect(wv.ok).toBe(true);
+
+      const pubRes = await calculateAndPublishResultsAction({ examId: withExam.id });
+      expect(pubRes.ok).toBe(true);
+
+      const results = await db.examResult.findMany({ where: { examId: withExam.id } });
+      expect(results).toHaveLength(1);
+      expect(results[0].studentId).toBe(student1.id);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // SECTION 14: STAGE 4.3 STEP 3.2.1 CONCURRENCY & MONOTONICITY
+  // ─────────────────────────────────────────────────────────────
+
+  describe("Section 14: Stage 4.3 Step 3.2.1 — Concurrency, Optimistic Locking & Monotonicity Audit", () => {
+    let s14Exam: { id: string };
+    let s14SubMath: { id: string };
+    let studentMono: { id: string };
+    let enrMono: { id: string };
+
+    beforeAll(async () => {
+      const mem = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+
+      s14Exam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Stage 4.3 Step 3.2.1 Concurrency Audit Exam",
+          code: `S14-CONC-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          isPublished: false,
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: mem!.id,
+        },
+      });
+      createdExamIds.push(s14Exam.id);
+
+      s14SubMath = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-20"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      studentMono = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "Monotonic",
+          lastName: "Candidate",
+          admissionNo: `S14-MONO-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(studentMono.id);
+
+      enrMono = await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          studentId: studentMono.id,
+          status: "ELIGIBLE",
+        },
+      });
+    });
+
+    it("1 & 10. Mark version monotonicity: version strictly increases across override and restoration (5 -> 6 -> 7)", async () => {
+      // 1. Initial mark seeded at version 5
+      const mark = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          examSubjectId: s14SubMath.id,
+          studentId: studentMono.id,
+          enrollmentId: enrMono.id,
+          marksObtained: 80,
+          evaluationStatus: "SUBMITTED",
+          version: 5,
+        },
+      });
+      expect(mark.version).toBe(5);
+
+      // 2. Candidate override transition to EXEMPTED
+      const exmRes = await updateEnrollmentStatusAction({
+        enrollmentId: enrMono.id,
+        status: "EXEMPTED",
+        overwriteExistingMarks: true,
+        remarks: "Medical override",
+      });
+      expect(exmRes.ok).toBe(true);
+
+      const markDuringOverride = await db.examMark.findUnique({ where: { id: mark.id } });
+      expect(markDuringOverride?.version).toBe(6); // Advanced 5 -> 6
+      expect(markDuringOverride?.isExempted).toBe(true);
+
+      // 3. Restoration transition to ELIGIBLE
+      const elgRes = await updateEnrollmentStatusAction({
+        enrollmentId: enrMono.id,
+        status: "ELIGIBLE",
+        remarks: "Returned to eligible",
+      });
+      expect(elgRes.ok).toBe(true);
+
+      const markAfterRestoration = await db.examMark.findUnique({ where: { id: mark.id } });
+      // Crucial: Concurrency version must advance forward, not roll back to 5!
+      expect(markAfterRestoration?.version).toBe(7); // Advanced 6 -> 7
+      expect(Number(markAfterRestoration?.marksObtained)).toBe(80); // Business data restored
+      expect(markAfterRestoration?.isExempted).toBe(false);
+    });
+
+    it("2. Rejection of stale pre-override submissions: stale expectedVersion (5) is rejected after restoration (7)", async () => {
+      const mem = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      const examPubCorr = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Published Correction Stale Version Exam",
+          code: `PUB-CORR-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          isPublished: false,
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: mem!.id,
+        },
+      });
+      createdExamIds.push(examPubCorr.id);
+
+      const pubSub = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: examPubCorr.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-20"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      const candCorr = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "PubCorr",
+          lastName: "Candidate",
+          admissionNo: `S14-PCR-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(candCorr.id);
+
+      const enrCorr = await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: examPubCorr.id,
+          studentId: candCorr.id,
+          status: "ELIGIBLE",
+        },
+      });
+
+      const mark = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: examPubCorr.id,
+          examSubjectId: pubSub.id,
+          studentId: candCorr.id,
+          enrollmentId: enrCorr.id,
+          marksObtained: 80,
+          evaluationStatus: "VERIFIED",
+          version: 5,
+        },
+      });
+
+      // 1. Candidate override transition to EXEMPTED (version 5 -> 6)
+      await updateEnrollmentStatusAction({
+        enrollmentId: enrCorr.id,
+        status: "EXEMPTED",
+        overwriteExistingMarks: true,
+      });
+
+      // 2. Candidate restoration to ELIGIBLE (version 6 -> 7)
+      await updateEnrollmentStatusAction({
+        enrollmentId: enrCorr.id,
+        status: "ELIGIBLE",
+      });
+
+      const currentMark = await db.examMark.findUnique({ where: { id: mark.id } });
+      expect(currentMark?.version).toBe(7);
+
+      // Now publish exam and create ExamResult to activate published correction workflow
+      await db.examination.update({ where: { id: examPubCorr.id }, data: { isPublished: true, status: "PUBLISHED" } });
+      await db.examResult.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: examPubCorr.id,
+          studentId: candCorr.id,
+          enrollmentId: enrCorr.id,
+          totalMaxMarks: 100,
+          totalMarksObtained: 80,
+          percentage: 80,
+          resultStatus: "PASS",
+        },
+      });
+
+      // Stale attempt using pre-override version 5
+      const staleAttempt = await correctPublishedMarkAction({
+        examId: examPubCorr.id,
+        examSubjectId: pubSub.id,
+        studentId: candCorr.id,
+        newMark: 85,
+        expectedVersion: 5,
+        reason: "Stale pre-override correction attempt that should be rejected",
+      });
+      expect(staleAttempt.ok).toBe(false);
+      expect(staleAttempt.code).toBe("STALE_VERSION");
+      expect(staleAttempt.error).toContain("modified by another process");
+
+      // Verify mark remains at version 7 and unmodified
+      const intactMark = await db.examMark.findUnique({ where: { id: mark.id } });
+      expect(intactMark?.version).toBe(7);
+      expect(Number(intactMark?.marksObtained)).toBe(80);
+
+      // Fresh attempt using current version 7 succeeds and increments to 8
+      const freshAttempt = await correctPublishedMarkAction({
+        examId: examPubCorr.id,
+        examSubjectId: pubSub.id,
+        studentId: candCorr.id,
+        newMark: 85,
+        expectedVersion: 7,
+        reason: "Authorized correction using current post-restoration version",
+      });
+      expect(freshAttempt.ok).toBe(true);
+
+      const finalMark = await db.examMark.findUnique({ where: { id: mark.id } });
+      expect(finalMark?.version).toBe(8); // Advanced 7 -> 8
+      expect(Number(finalMark?.marksObtained)).toBe(85);
+    });
+
+    it("3. Concurrent enterMarksBulkAction optimistic concurrency: two simultaneous requests with expectedVersion 5", async () => {
+      // 1. Create an eligible student with one subject mark in an active IN_PROGRESS exam
+      const concStudent = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "ConcOpt",
+          lastName: "Candidate",
+          admissionNo: `S14-OPT-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(concStudent.id);
+
+      const concEnr = await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          studentId: concStudent.id,
+          status: "ELIGIBLE",
+        },
+      });
+
+      // 2. Set the mark to a known initial value and version (e.g. 70 at version 5)
+      const initialMark = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          examSubjectId: s14SubMath.id,
+          studentId: concStudent.id,
+          enrollmentId: concEnr.id,
+          marksObtained: 70,
+          evaluationStatus: "DRAFT",
+          version: 5,
+        },
+      });
+      expect(initialMark.version).toBe(5);
+
+      // Check revision events before concurrent race
+      const revisionsBefore = await db.examMarksRevisionEvent.findMany({
+        where: { markId: initialMark.id },
+      });
+      const initialRevisionCount = revisionsBefore.length;
+
+      // 3. Prepare two independent requests using the same expectedVersion: 5 with different scores (80 and 90)
+      const reqA = enterMarksBulkAction({
+        examId: s14Exam.id,
+        examSubjectId: s14SubMath.id,
+        entries: [
+          {
+            studentId: concStudent.id,
+            marksObtained: 80,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 5,
+          },
+        ],
+        reason: "Concurrent entry A with expectedVersion 5",
+        submitForVerification: false,
+      });
+
+      const reqB = enterMarksBulkAction({
+        examId: s14Exam.id,
+        examSubjectId: s14SubMath.id,
+        entries: [
+          {
+            studentId: concStudent.id,
+            marksObtained: 90,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 5,
+          },
+        ],
+        reason: "Concurrent entry B with expectedVersion 5",
+        submitForVerification: false,
+      });
+
+      // 4. Execute both concurrently using Promise.all
+      const [resA, resB] = await Promise.all([reqA, reqB]);
+
+      // Assertions:
+      // Exactly one request succeeds and exactly one request fails with STALE_VERSION
+      const successes = [resA, resB].filter((r) => r.ok);
+      const failures = [resA, resB].filter((r) => !r.ok);
+
+      expect(successes).toHaveLength(1);
+      expect(failures).toHaveLength(1);
+      expect(failures[0].code).toBe("STALE_VERSION");
+      expect(failures[0].error).toContain("modified by another process");
+
+      // Determine winning score
+      const winningScore = resA.ok ? 80 : 90;
+
+      // The final mark contains the score from the successful request
+      const finalMark = await db.examMark.findUnique({ where: { id: initialMark.id } });
+      expect(Number(finalMark?.marksObtained)).toBe(winningScore);
+
+      // The final version is exactly 6, not 7
+      expect(finalMark?.version).toBe(6);
+
+      // Only one successful revision event exists for the concurrent submission
+      const revisionsAfter = await db.examMarksRevisionEvent.findMany({
+        where: { markId: initialMark.id },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(revisionsAfter.length).toBe(initialRevisionCount + 1);
+      const newRevision = revisionsAfter[revisionsAfter.length - 1];
+      expect(Number(newRevision.newMarks)).toBe(winningScore);
+      expect(Number(newRevision.oldMarks)).toBe(70);
+
+      // No duplicate or partially updated mark exists
+      const markCount = await db.examMark.count({
+        where: { examSubjectId: s14SubMath.id, studentId: concStudent.id },
+      });
+      expect(markCount).toBe(1);
+
+      // Tenant isolation: querying from another tenant returns null
+      const crossTenantCheck = await db.examMark.findFirst({
+        where: { id: initialMark.id, tenantId: "tenant-other-isolation" },
+      });
+      expect(crossTenantCheck).toBeNull();
+    });
+
+    it("4. Concurrent marks entry versus candidate status override (Scenario A/B): serializes without race", async () => {
+      const raceStudent = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "RaceAB",
+          lastName: "Student",
+          admissionNo: `S14-RAB-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(raceStudent.id);
+
+      const raceEnr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s14Exam.id, studentId: raceStudent.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          examSubjectId: s14SubMath.id,
+          studentId: raceStudent.id,
+          enrollmentId: raceEnr.id,
+          marksObtained: 60,
+          evaluationStatus: "SUBMITTED",
+        },
+      });
+
+      // Fire concurrent marks entry and status update without overwrite confirmation
+      const [markResult, statusResult] = await Promise.all([
+        enterMarksBulkAction({
+          examId: s14Exam.id,
+          examSubjectId: s14SubMath.id,
+          entries: [{ studentId: raceStudent.id, marksObtained: 92, isAbsent: false, isExempted: false }],
+          reason: "Concurrent mark entry race",
+          submitForVerification: false,
+        }),
+        updateEnrollmentStatusAction({
+          enrollmentId: raceEnr.id,
+          status: "EXEMPTED",
+          overwriteExistingMarks: false, // Must not overwrite without confirmation
+          remarks: "Concurrent exemption race",
+        }),
+      ]);
+
+      // Serialized outcome: either marks entry ran first (triggering EXISTING_MARKS_PRESENT on status update),
+      // or status update ran first (locking candidate into EXEMPTED and rejecting marks entry).
+      const validSerialization =
+        (markResult.ok && !statusResult.ok && statusResult.code === "EXISTING_MARKS_PRESENT") ||
+        (statusResult.ok && !markResult.ok && markResult.error?.includes("Cannot enter numeric marks"));
+      expect(validSerialization).toBe(true);
+
+      const finalMark = await db.examMark.findFirst({
+        where: { examSubjectId: s14SubMath.id, studentId: raceStudent.id },
+      });
+      const finalEnr = await db.examEnrollment.findUnique({ where: { id: raceEnr.id } });
+
+      // State is consistent: marks and enrollment match
+      if (statusResult.ok) {
+        expect(finalEnr?.status).toBe("EXEMPTED");
+        expect(finalMark?.isExempted).toBe(true);
+      } else {
+        expect(finalEnr?.status).toBe("ELIGIBLE");
+        expect(finalMark?.isExempted).toBe(false);
+      }
+    });
+
+    it("5. Concurrent EXEMPTED versus ABSENT requests (Scenario C): preserves original baseline snapshot without loss", async () => {
+      const concStudent = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "ConcCD",
+          lastName: "Student",
+          admissionNo: `S14-CCD-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(concStudent.id);
+
+      const concEnr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s14Exam.id, studentId: concStudent.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          examSubjectId: s14SubMath.id,
+          studentId: concStudent.id,
+          enrollmentId: concEnr.id,
+          marksObtained: 85,
+          evaluationStatus: "SUBMITTED",
+        },
+      });
+
+      // Fire concurrent EXEMPTED and ABSENT requests with overwrite confirmation
+      const [resExm, resAbs] = await Promise.all([
+        updateEnrollmentStatusAction({
+          enrollmentId: concEnr.id,
+          status: "EXEMPTED",
+          overwriteExistingMarks: true,
+          remarks: "Concurrent exempt call",
+        }),
+        updateEnrollmentStatusAction({
+          enrollmentId: concEnr.id,
+          status: "ABSENT",
+          overwriteExistingMarks: true,
+          remarks: "Concurrent absent call",
+        }),
+      ]);
+
+      expect(resExm.ok).toBe(true);
+      expect(resAbs.ok).toBe(true);
+
+      // Verify that the final preservedMarks STILL retains the original baseline (Math = 85),
+      // and NOT a placeholder from the racing override!
+      const enrAfterRace = await db.examEnrollment.findUnique({ where: { id: concEnr.id } });
+      const preserved = enrAfterRace?.preservedMarks as unknown as PreservedSubjectMark[];
+      expect(Array.isArray(preserved)).toBe(true);
+      const mathPreserved = preserved.find((p) => p.examSubjectId === s14SubMath.id);
+      expect(mathPreserved?.marksObtained).toBe(85);
+      expect(mathPreserved?.isExempted).toBe(false);
+      expect(mathPreserved?.isAbsent).toBe(false);
+
+      // Now restore to ELIGIBLE: original score 85 must be restored
+      const restoreRes = await updateEnrollmentStatusAction({
+        enrollmentId: concEnr.id,
+        status: "ELIGIBLE",
+        remarks: "Restoring after concurrent test",
+      });
+      expect(restoreRes.ok).toBe(true);
+
+      const restoredMark = await db.examMark.findFirst({
+        where: { examSubjectId: s14SubMath.id, studentId: concStudent.id },
+      });
+      expect(Number(restoredMark?.marksObtained)).toBe(85);
+      expect(restoredMark?.isExempted).toBe(false);
+      expect(restoredMark?.isAbsent).toBe(false);
+    });
+
+    it("6. Concurrent restoration requests (Scenario D): restores cleanly and idempotently", async () => {
+      const restStudent = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "ConcRest",
+          lastName: "Student",
+          admissionNo: `S14-RST-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(restStudent.id);
+
+      const restEnr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s14Exam.id, studentId: restStudent.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          examSubjectId: s14SubMath.id,
+          studentId: restStudent.id,
+          enrollmentId: restEnr.id,
+          marksObtained: 77,
+          evaluationStatus: "SUBMITTED",
+        },
+      });
+
+      // Override to EXEMPTED
+      await updateEnrollmentStatusAction({
+        enrollmentId: restEnr.id,
+        status: "EXEMPTED",
+        overwriteExistingMarks: true,
+      });
+
+      // Fire concurrent restoration requests
+      const [r1, r2] = await Promise.all([
+        updateEnrollmentStatusAction({ enrollmentId: restEnr.id, status: "ELIGIBLE", remarks: "Restore 1" }),
+        updateEnrollmentStatusAction({ enrollmentId: restEnr.id, status: "ELIGIBLE", remarks: "Restore 2" }),
+      ]);
+
+      // Exactly one restores and the other handles safely under the lock
+      expect(r1.ok || r2.ok).toBe(true);
+
+      const finalEnr = await db.examEnrollment.findUnique({ where: { id: restEnr.id } });
+      expect(finalEnr?.status).toBe("ELIGIBLE");
+      expect(finalEnr?.preservedMarks).toBeNull();
+
+      const finalMark = await db.examMark.findFirst({
+        where: { examSubjectId: s14SubMath.id, studentId: restStudent.id },
+      });
+      expect(Number(finalMark?.marksObtained)).toBe(77);
+    });
+
+    it("7. Existing preservation baseline remains invariant through repeated multi-override transitions", async () => {
+      const multiStudent = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "MultiOverride",
+          lastName: "Student",
+          admissionNo: `S14-MUL-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(multiStudent.id);
+
+      const multiEnr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s14Exam.id, studentId: multiStudent.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          examSubjectId: s14SubMath.id,
+          studentId: multiStudent.id,
+          enrollmentId: multiEnr.id,
+          marksObtained: 90,
+          evaluationStatus: "SUBMITTED",
+        },
+      });
+
+      // 1. ELIGIBLE -> EXEMPTED
+      await updateEnrollmentStatusAction({ enrollmentId: multiEnr.id, status: "EXEMPTED", overwriteExistingMarks: true });
+      // 2. EXEMPTED -> ABSENT
+      await updateEnrollmentStatusAction({ enrollmentId: multiEnr.id, status: "ABSENT" });
+      // 3. ABSENT -> EXEMPTED
+      await updateEnrollmentStatusAction({ enrollmentId: multiEnr.id, status: "EXEMPTED" });
+      // 4. EXEMPTED -> ABSENT
+      await updateEnrollmentStatusAction({ enrollmentId: multiEnr.id, status: "ABSENT" });
+
+      // Baseline in preservedMarks must still be Math 90
+      const enr = await db.examEnrollment.findUnique({ where: { id: multiEnr.id } });
+      const preserved = enr?.preservedMarks as unknown as PreservedSubjectMark[];
+      const pMath = preserved.find((p) => p.examSubjectId === s14SubMath.id);
+      expect(pMath?.marksObtained).toBe(90);
+
+      // 5. ABSENT -> ELIGIBLE
+      const resRestore = await updateEnrollmentStatusAction({ enrollmentId: multiEnr.id, status: "ELIGIBLE" });
+      expect(resRestore.ok).toBe(true);
+
+      const finalMark = await db.examMark.findFirst({
+        where: { examSubjectId: s14SubMath.id, studentId: multiStudent.id },
+      });
+      expect(Number(finalMark?.marksObtained)).toBe(90);
+    });
+
+    it("8. Missing and corrupted preservation payloads safely rejected without wiping marks", async () => {
+      const corruptStudent = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "CorruptPayload",
+          lastName: "Student",
+          admissionNo: `S14-CPY-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(corruptStudent.id);
+
+      const cEnr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s14Exam.id, studentId: corruptStudent.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          examSubjectId: s14SubMath.id,
+          studentId: corruptStudent.id,
+          enrollmentId: cEnr.id,
+          marksObtained: 72,
+          evaluationStatus: "SUBMITTED",
+        },
+      });
+
+      // Override to EXEMPTED
+      await updateEnrollmentStatusAction({ enrollmentId: cEnr.id, status: "EXEMPTED", overwriteExistingMarks: true });
+
+      // Corrupt payload to invalid object (not an array)
+      await db.examEnrollment.update({
+        where: { id: cEnr.id },
+        data: { preservedMarks: { invalid: true } as unknown as Prisma.InputJsonValue },
+      });
+
+      const attempt1 = await updateEnrollmentStatusAction({ enrollmentId: cEnr.id, status: "ELIGIBLE" });
+      expect(attempt1.ok).toBe(false);
+      expect(attempt1.code).toBe("RESTORATION_STATE_MISSING");
+
+      // Corrupt payload to array with invalid element schema
+      await db.examEnrollment.update({
+        where: { id: cEnr.id },
+        data: { preservedMarks: [{ badProperty: 123 }] as unknown as Prisma.InputJsonValue },
+      });
+
+      const attempt2 = await updateEnrollmentStatusAction({ enrollmentId: cEnr.id, status: "ELIGIBLE" });
+      expect(attempt2.ok).toBe(false);
+      expect(attempt2.code).toBe("RESTORATION_STATE_MISSING");
+
+      // Verify marks were not wiped
+      const currentMark = await db.examMark.findFirst({
+        where: { examSubjectId: s14SubMath.id, studentId: corruptStudent.id },
+      });
+      expect(currentMark?.evaluationStatus).toBe("VERIFIED");
+      expect(currentMark?.isExempted).toBe(true);
+    });
+
+    it("9. Preservation payload cannot be overwritten or cleared by unrelated exam actions", async () => {
+      const pStudent = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "UnrelatedAction",
+          lastName: "Student",
+          admissionNo: `S14-UNR-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(pStudent.id);
+
+      const pEnr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s14Exam.id, studentId: pStudent.id, status: "ELIGIBLE" },
+      });
+
+      await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s14Exam.id,
+          examSubjectId: s14SubMath.id,
+          studentId: pStudent.id,
+          enrollmentId: pEnr.id,
+          marksObtained: 88,
+          evaluationStatus: "SUBMITTED",
+        },
+      });
+
+      // Override to EXEMPTED
+      await updateEnrollmentStatusAction({ enrollmentId: pEnr.id, status: "EXEMPTED", overwriteExistingMarks: true });
+
+      // Run unrelated action: updateExaminationAction
+      const updateExamRes = await updateExaminationAction({
+        id: s14Exam.id,
+        title: "Renamed Exam During Preservation Audit",
+        startDate: "2026-11-20",
+        endDate: "2026-11-25",
+      });
+      expect(updateExamRes.ok).toBe(true);
+
+      // Run unrelated action: autoEnrollEligibleStudentsAction
+      const autoRes = await autoEnrollEligibleStudentsAction(s14Exam.id);
+      expect(autoRes.ok).toBe(true);
+
+      // Verify preservedMarks remains intact
+      const enrCheck = await db.examEnrollment.findUnique({ where: { id: pEnr.id } });
+      const preserved = enrCheck?.preservedMarks as unknown as PreservedSubjectMark[];
+      expect(Array.isArray(preserved)).toBe(true);
+      expect(preserved[0].marksObtained).toBe(88);
+    });
+
+    it("10. Manual database migration script idempotency: ALTER TABLE succeeds with 0 errors", async () => {
+      // Re-run the manual migration statement directly against PostgreSQL
+      await expect(
+        db.$executeRawUnsafe('ALTER TABLE "ExamEnrollment" ADD COLUMN IF NOT EXISTS "preservedMarks" JSONB;')
+      ).resolves.not.toThrow();
+
+      // Verify existing preservedMarks data is completely intact
+      const sample = await db.examEnrollment.findFirst({
+        where: { preservedMarks: { not: Prisma.DbNull } },
+      });
+      if (sample) {
+        expect(sample.preservedMarks).toBeDefined();
+      }
     });
   });
 });

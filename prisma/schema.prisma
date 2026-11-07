@@ -1375,12 +1375,13 @@ model ExamEnrollment {
   id         String               @id @default(cuid())
   tenantId   String
   examId     String
-  studentId  String
-  rollNumber String?
-  status     ExamEnrollmentStatus @default(ELIGIBLE)
-  remarks    String?
-  createdAt  DateTime             @default(now())
-  updatedAt  DateTime             @updatedAt
+  studentId      String
+  rollNumber     String?
+  status         ExamEnrollmentStatus @default(ELIGIBLE)
+  remarks        String?
+  preservedMarks Json?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
 
   tenant  Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   exam    Examination @relation(fields: [examId], references: [id], onDelete: Cascade)

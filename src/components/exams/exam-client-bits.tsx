@@ -36,6 +36,7 @@ import {
   cancelExaminationAction,
   reopenEvaluatedExamAction,
   archiveExaminationAction,
+  updateEnrollmentStatusAction,
 } from "@/actions/exams";
 
 // ─────────────────────────────────────────────────────────────
@@ -423,6 +424,8 @@ type EnrolledStudent = {
   isExempted: boolean;
   feedback: string | null;
   evaluationStatus: string;
+  enrollmentStatus?: string;
+  enrollmentId?: string;
 };
 
 export function MarksEntryGrid({
@@ -594,12 +597,26 @@ export function MarksEntryGrid({
             {students.map((student, idx) => {
               const entry = studentEntries[idx];
               const isLocked = student.evaluationStatus === "VERIFIED";
+              const isCandidateExempted = student.enrollmentStatus === "EXEMPTED";
+              const isCandidateAbsent = student.enrollmentStatus === "ABSENT";
+              const isCandidateWithdrawn = student.enrollmentStatus === "WITHDRAWN";
+              const isCandidateRestricted = isCandidateExempted || isCandidateAbsent || isCandidateWithdrawn;
+              const inputDisabled = isLocked || isCandidateRestricted;
 
               return (
                 <tr key={student.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/30">
                   <td className="text-zinc-400 text-xs">{idx + 1}</td>
                   <td className="font-medium text-zinc-900 dark:text-zinc-100">
-                    {student.name}
+                    <div>{student.name}</div>
+                    {isCandidateExempted && (
+                      <span className="badge badge-info badge-xs mt-0.5">Exam Exempted</span>
+                    )}
+                    {isCandidateAbsent && (
+                      <span className="badge badge-error badge-xs mt-0.5">Exam Absent</span>
+                    )}
+                    {isCandidateWithdrawn && (
+                      <span className="badge badge-neutral badge-xs mt-0.5">Withdrawn</span>
+                    )}
                   </td>
                   <td className="text-zinc-500 text-xs">
                     {student.admissionNo} {student.rollNumber ? `• Roll: ${student.rollNumber}` : ""}
@@ -610,12 +627,24 @@ export function MarksEntryGrid({
                       step="0.5"
                       min="0"
                       max={maxMarks}
-                      disabled={isLocked || entry.isAbsent || entry.isExempted}
+                      disabled={inputDisabled || entry.isAbsent || entry.isExempted}
                       value={entry.marksObtained !== null && entry.marksObtained !== undefined ? entry.marksObtained : ""}
                       onChange={(e) =>
                         updateEntry(idx, "marksObtained", e.target.value === "" ? null : Number(e.target.value))
                       }
-                      placeholder={entry.isAbsent ? "ABS" : entry.isExempted ? "EXM" : "0"}
+                      placeholder={
+                        isCandidateExempted
+                          ? "EXM (Exam)"
+                          : isCandidateAbsent
+                          ? "ABS (Exam)"
+                          : isCandidateWithdrawn
+                          ? "WTH"
+                          : entry.isAbsent
+                          ? "ABS"
+                          : entry.isExempted
+                          ? "EXM"
+                          : "0"
+                      }
                       className={`input input-bordered input-sm w-28 text-right font-mono font-medium ${
                         entry.marksObtained !== null && entry.marksObtained < passingMarks
                           ? "border-amber-500 text-amber-600 dark:text-amber-400"
@@ -626,7 +655,7 @@ export function MarksEntryGrid({
                   <td className="text-center">
                     <input
                       type="checkbox"
-                      disabled={isLocked}
+                      disabled={inputDisabled}
                       checked={entry.isAbsent}
                       onChange={(e) => updateEntry(idx, "isAbsent", e.target.checked)}
                       className="checkbox checkbox-sm checkbox-error"
@@ -635,7 +664,7 @@ export function MarksEntryGrid({
                   <td className="text-center">
                     <input
                       type="checkbox"
-                      disabled={isLocked}
+                      disabled={inputDisabled}
                       checked={entry.isExempted}
                       onChange={(e) => updateEntry(idx, "isExempted", e.target.checked)}
                       className="checkbox checkbox-sm checkbox-info"
@@ -644,7 +673,7 @@ export function MarksEntryGrid({
                   <td>
                     <input
                       type="text"
-                      disabled={isLocked}
+                      disabled={inputDisabled}
                       value={entry.feedback}
                       onChange={(e) => updateEntry(idx, "feedback", e.target.value)}
                       placeholder="Optional feedback..."
@@ -1695,6 +1724,222 @@ export function ReopenEvaluatedExamModal({
                   className="btn btn-warning btn-sm text-xs"
                 >
                   {isPending ? "Reopening..." : "Confirm Reopen"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// 12. UPDATE ENROLLMENT STATUS MODAL
+// ─────────────────────────────────────────────────────────────
+
+export function UpdateEnrollmentStatusModal({
+  enrollmentId,
+  studentName,
+  admissionNo,
+  currentStatus,
+  hasExistingScores = false,
+  disabled = false,
+}: {
+  enrollmentId: string;
+  studentName: string;
+  admissionNo: string;
+  currentStatus: string;
+  hasExistingScores?: boolean;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState(currentStatus);
+  const [remarks, setRemarks] = useState("");
+  const [overwriteExistingMarks, setOverwriteExistingMarks] = useState(false);
+  const [requiresOverwriteConfirmation, setRequiresOverwriteConfirmation] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+  const router = useRouter();
+
+  const handleOpen = () => {
+    setStatus(currentStatus);
+    setRemarks("");
+    setOverwriteExistingMarks(false);
+    setRequiresOverwriteConfirmation(false);
+    setError(null);
+    setOpen(true);
+  };
+
+  const handleStatusChange = (newStatus: string) => {
+    setStatus(newStatus);
+    setError(null);
+    if ((newStatus === "EXEMPTED" || newStatus === "ABSENT") && hasExistingScores) {
+      setRequiresOverwriteConfirmation(true);
+    } else {
+      setRequiresOverwriteConfirmation(false);
+      setOverwriteExistingMarks(false);
+    }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    startTransition(async () => {
+      const res = await updateEnrollmentStatusAction({
+        enrollmentId,
+        status: status as "ELIGIBLE" | "ABSENT" | "EXEMPTED" | "WITHDRAWN",
+        remarks: remarks.trim() || null,
+        overwriteExistingMarks,
+      });
+
+      if (!res.ok) {
+        if (res.code === "EXISTING_MARKS_PRESENT") {
+          setRequiresOverwriteConfirmation(true);
+        }
+        setError(res.error || "Failed to update enrollment status.");
+      } else {
+        setOpen(false);
+        router.refresh();
+      }
+    });
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleOpen}
+        disabled={disabled}
+        className="btn btn-ghost btn-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 flex items-center gap-1"
+        title="Manage Candidate Participation Status"
+      >
+        <Edit3 className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">Status</span>
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-base-100 rounded-2xl shadow-2xl border border-zinc-200 dark:border-zinc-800 p-6 max-w-lg w-full space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-200 dark:border-zinc-800">
+              <div>
+                <h3 className="font-semibold text-base text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                  <Users className="h-5 w-5 text-indigo-500" />
+                  Candidate Participation Status
+                </h3>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  {studentName} • Adm No: <span className="font-mono">{admissionNo}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="btn btn-ghost btn-circle btn-xs text-zinc-400"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {error && (
+              <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 text-rose-700 dark:text-rose-400 text-xs flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider block mb-1">
+                  Participation Status *
+                </label>
+                <select
+                  value={status}
+                  onChange={(e) => handleStatusChange(e.target.value)}
+                  disabled={isPending}
+                  className="select select-bordered select-sm w-full text-xs font-medium"
+                >
+                  <option value="ELIGIBLE">ELIGIBLE (Active Candidate)</option>
+                  <option value="EXEMPTED">EXEMPTED (Exempt from All Subjects)</option>
+                  <option value="ABSENT">ABSENT (Absent from All Assessments)</option>
+                  <option value="WITHDRAWN">WITHDRAWN (Excluded from Exam)</option>
+                </select>
+
+                <div className="mt-2 text-[11px] p-2.5 rounded-lg bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 space-y-1">
+                  {status === "ELIGIBLE" && (
+                    <p>Candidate is actively enrolled and expected to sit for subject assessments.</p>
+                  )}
+                  {status === "EXEMPTED" && (
+                    <p>
+                      <strong>Candidate Exemption:</strong> Propagates verified exemption to all subjects.
+                      Published result outcome is <strong>WITHHELD</strong>, grade <strong>EXM</strong>, and institutional rank is <strong>null</strong>.
+                    </p>
+                  )}
+                  {status === "ABSENT" && (
+                    <p>
+                      <strong>Candidate Absence:</strong> Propagates verified absence to all subjects.
+                      Published result outcome is <strong>FAIL</strong> with 0%, lowest grade band, and institutional rank is <strong>null</strong>.
+                    </p>
+                  )}
+                  {status === "WITHDRAWN" && (
+                    <p>
+                      <strong>Withdrawn:</strong> Candidate is completely excluded from Cartesian completeness verification, evaluation, and published rosters.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {(requiresOverwriteConfirmation || (hasExistingScores && (status === "EXEMPTED" || status === "ABSENT"))) && (
+                <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 text-xs space-y-2">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
+                    <span>Existing Subject-Level Marks Overwrite Confirmation</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed">
+                    This candidate has existing subject-level records (numeric scores, subject exemptions, or absences). Applying candidate-level <strong>{status}</strong> will replace them with verified placeholder marks. (Original marks are safely preserved and will be restored if reverted to ELIGIBLE).
+                  </p>
+                  <label className="flex items-center gap-2 cursor-pointer pt-1 font-medium text-xs">
+                    <input
+                      type="checkbox"
+                      checked={overwriteExistingMarks}
+                      onChange={(e) => setOverwriteExistingMarks(e.target.checked)}
+                      disabled={isPending}
+                      className="checkbox checkbox-xs checkbox-warning"
+                    />
+                    <span>I confirm overwriting existing subject marks for this candidate</span>
+                  </label>
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider block mb-1">
+                  Administrative Remarks / Justification
+                </label>
+                <textarea
+                  value={remarks}
+                  onChange={(e) => setRemarks(e.target.value)}
+                  disabled={isPending}
+                  placeholder="e.g. Medical certificate approved by principal; or transferred out"
+                  className="textarea textarea-bordered textarea-sm w-full text-xs"
+                  rows={2}
+                />
+              </div>
+
+              <div className="pt-2 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  disabled={isPending}
+                  className="btn btn-ghost btn-sm text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isPending || (requiresOverwriteConfirmation && !overwriteExistingMarks)}
+                  className="btn btn-primary btn-sm text-xs"
+                >
+                  {isPending ? "Updating..." : "Save Status"}
                 </button>
               </div>
             </form>

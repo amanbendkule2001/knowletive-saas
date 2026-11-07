@@ -34,7 +34,9 @@ import {
   CancelExamModal,
   ArchiveExamModal,
   ReopenEvaluatedExamModal,
+  UpdateEnrollmentStatusModal,
 } from "@/components/exams/exam-client-bits";
+import { verifyCandidateSubjectCompleteness } from "@/lib/exam-lifecycle";
 import type { ExamStatus } from "@prisma/client";
 
 function examStatusTone(status: ExamStatus): Tone {
@@ -76,6 +78,7 @@ export default async function ExamStudioPage({
   const canPublish = hasTenantPermission(ctx, "tenant.exams.publish_results");
   const canCorrectMarks = hasTenantPermission(ctx, "tenant.exams.correct_published_marks");
   const canManageGrading = hasTenantPermission(ctx, "tenant.exams.manage_grading");
+  const canEnroll = hasTenantPermission(ctx, "tenant.exams.enroll");
 
   const [exam, availableSubjects] = await Promise.all([
     db.examination.findFirst({
@@ -148,6 +151,11 @@ export default async function ExamStudioPage({
       ? `Batch: ${exam.batch?.name || "N/A"}`
       : `Class: ${exam.class?.name || "N/A"}${exam.section ? ` (Sec ${exam.section.name})` : " (All Sections)"}`;
 
+  const completeness =
+    activeTab === "marks" && exam.subjects.length > 0 && exam.enrollments.length > 0
+      ? await verifyCandidateSubjectCompleteness(db, exam.id, ctx.tenant.id)
+      : null;
+
   // Subject selected for marks entry
   const currentExamSubject =
     exam.subjects.find((s) => s.id === selectedSubjectId) || exam.subjects[0];
@@ -168,6 +176,8 @@ export default async function ExamStudioPage({
       isExempted: existingMark?.isExempted ?? false,
       feedback: existingMark?.feedback ?? null,
       evaluationStatus: existingMark?.evaluationStatus ?? "PENDING",
+      enrollmentStatus: enr.status,
+      enrollmentId: enr.id,
     };
   });
 
@@ -496,6 +506,9 @@ export default async function ExamStudioPage({
                   <th>Roll Number</th>
                   <th className="text-center">Participation Status</th>
                   <th className="text-right">Marks Logged</th>
+                  {canEnroll && !["PUBLISHED", "ARCHIVED", "EVALUATED"].includes(exam.status) && (
+                    <th className="text-right">Actions</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
@@ -508,13 +521,42 @@ export default async function ExamStudioPage({
                     <td className="text-zinc-500 font-mono">{enr.student.admissionNo}</td>
                     <td className="text-zinc-500 font-mono">{enr.rollNumber || "-"}</td>
                     <td className="text-center">
-                      <span className="badge badge-sm badge-success font-medium">
+                      <span
+                        className={`badge badge-sm font-medium ${
+                          enr.status === "ELIGIBLE"
+                            ? "badge-success text-emerald-700 dark:text-emerald-300"
+                            : enr.status === "EXEMPTED"
+                            ? "badge-info text-blue-700 dark:text-blue-300"
+                            : enr.status === "ABSENT"
+                            ? "badge-error text-rose-700 dark:text-rose-300"
+                            : "badge-neutral text-zinc-500"
+                        }`}
+                      >
                         {enr.status}
                       </span>
                     </td>
                     <td className="text-right font-mono text-zinc-500">
                       {enr.marks.length} / {exam.subjects.length} subjects
                     </td>
+                    {canEnroll && !["PUBLISHED", "ARCHIVED", "EVALUATED"].includes(exam.status) && (
+                      <td className="text-right">
+                        <UpdateEnrollmentStatusModal
+                          enrollmentId={enr.id}
+                          studentName={`${enr.student.firstName} ${enr.student.lastName}`.trim()}
+                          admissionNo={enr.student.admissionNo}
+                          currentStatus={enr.status}
+                          hasExistingScores={enr.marks.some(
+                            (m) =>
+                              m.marksObtained !== null ||
+                              m.isAbsent ||
+                              m.isExempted ||
+                              m.evaluationStatus === "VERIFIED" ||
+                              m.evaluationStatus === "SUBMITTED" ||
+                              Boolean(m.feedback && m.feedback.trim() !== "")
+                          )}
+                        />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -526,6 +568,35 @@ export default async function ExamStudioPage({
       {/* TAB 4: MARKS ENTRY GRID */}
       {activeTab === "marks" && (
         <div className="space-y-4">
+          {completeness && (
+            <div
+              className={`p-3.5 rounded-xl border text-xs flex items-start gap-3 ${
+                completeness.isValid
+                  ? "bg-emerald-50/60 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200"
+                  : "bg-amber-50/60 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200"
+              }`}
+            >
+              <ShieldCheck
+                className={`h-4 w-4 shrink-0 mt-0.5 ${
+                  completeness.isValid ? "text-emerald-600" : "text-amber-600"
+                }`}
+              />
+              <div className="space-y-1">
+                <p className="font-semibold">
+                  {completeness.isValid
+                    ? `Evaluation Ready: All ${completeness.expectedPairsCount} candidate-subject marks are verified.`
+                    : `Evaluation Incomplete: ${completeness.verifiedMarksCount} of ${completeness.expectedPairsCount} candidate-subject marks verified.`}
+                </p>
+                <p className="text-[11px] text-zinc-600 dark:text-zinc-400">
+                  Roster: {completeness.eligibleCandidatesCount} eligible/evaluated candidates across {completeness.configuredSubjectsCount} subjects.
+                  {!completeness.isValid && completeness.errors.length > 0 && (
+                    <span> — {completeness.errors[0]}</span>
+                  )}
+                </p>
+              </div>
+            </div>
+          )}
+
           {exam.subjects.length === 0 ? (
             <EmptyState
               title="No subjects available"

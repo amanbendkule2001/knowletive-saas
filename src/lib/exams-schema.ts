@@ -190,6 +190,7 @@ export const updateEnrollmentStatusSchema = z.object({
   enrollmentId: z.string().min(1),
   status: z.enum(EXAM_ENROLLMENT_STATUSES),
   remarks: z.string().nullish().transform((v) => v || null),
+  overwriteExistingMarks: z.boolean().optional(),
 });
 
 export const markEntryItemSchema = z
@@ -199,6 +200,7 @@ export const markEntryItemSchema = z
     isAbsent: z.boolean().default(false),
     isExempted: z.boolean().default(false),
     feedback: z.string().nullish().transform((v) => v || null),
+    expectedVersion: z.coerce.number().int().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.isAbsent && data.isExempted) {

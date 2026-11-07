@@ -757,6 +757,82 @@ async function runBrowserWorkflows() {
     const currentStatus = (await prisma.examination.findUnique({ where: { id: evalExamForReopen.id } }))?.status;
     record(39, "Same-status metadata update behavior", currentStatus === "IN_PROGRESS");
 
+    // WORKFLOW 40: Candidate Participation Status UI Transition & Badging (Stage 4.3 Step 3)
+    const candExam = await prisma.examination.create({
+      data: {
+        tenantId: tenant.id,
+        academicYearId: ay.id,
+        gradeScaleId: gradeScale.id,
+        createdById: adminMem.id,
+        targetType: "CLASS_SECTION",
+        classId: classLevel.id,
+        title: `Candidate Status UI Exam (${timestamp})`,
+        code: `CAND-${timestamp}`,
+        examType: "UNIT_TEST",
+        status: "IN_PROGRESS",
+        startDate: new Date("2026-11-01"),
+        endDate: new Date("2026-11-05"),
+      },
+    });
+    createdExamIds.push(candExam.id);
+
+    await prisma.examSubject.create({
+      data: {
+        tenantId: tenant.id,
+        examId: candExam.id,
+        subjectId: subject.id,
+        examDate: new Date("2026-11-02"),
+        maxMarks: 100,
+        passingMarks: 35,
+        order: 1,
+      },
+    });
+
+    await prisma.examEnrollment.create({
+      data: {
+        tenantId: tenant.id,
+        examId: candExam.id,
+        studentId: linkedStudentId,
+        status: "ELIGIBLE",
+      },
+    });
+
+    // 1. Visit exam page on Roster tab
+    await lcPage.goto(`${BASE_URL}/app/exams/${candExam.id}?tab=roster`);
+    await lcPage.waitForLoadState("networkidle");
+
+    // 2. Open status modal
+    const statusModalBtn = lcPage.locator('button:has-text("Status")').first();
+    await statusModalBtn.waitFor({ state: "visible", timeout: 5000 });
+    await statusModalBtn.click();
+
+    // 3. Modal appears: select EXEMPTED and add remarks
+    await lcPage.waitForSelector('h3:has-text("Candidate Participation Status")', { timeout: 5000 });
+    const selectElem = lcPage.locator('select').last();
+    await selectElem.selectOption("EXEMPTED");
+
+    const remarksTextarea = lcPage.locator('textarea').last();
+    await remarksTextarea.fill("Medical exemption verified by principal via UI");
+
+    // 4. Save status
+    const saveBtn = lcPage.locator('button:has-text("Save Status")');
+    await saveBtn.click();
+    await lcPage.waitForSelector('h3:has-text("Candidate Participation Status")', { state: "detached", timeout: 8000 });
+    await lcPage.waitForTimeout(1000);
+
+    // 5. Check Roster table updated status
+    await lcPage.goto(`${BASE_URL}/app/exams/${candExam.id}?tab=roster`);
+    await lcPage.waitForLoadState("networkidle");
+    const hasExemptedBadge = await lcPage.locator('span.badge:has-text("EXEMPTED")').isVisible();
+
+    // 6. Navigate to Marks tab and verify badge & disabled input
+    await lcPage.goto(`${BASE_URL}/app/exams/${candExam.id}?tab=marks`);
+    await lcPage.waitForLoadState("networkidle");
+    const hasExamExemptedPill = await lcPage.locator('span.badge:has-text("Exam Exempted")').isVisible();
+    const markInputDisabled = await lcPage.locator('input[placeholder*="EXM"]').isDisabled();
+
+    record(40, "Candidate Participation Status UI Transition & Badging", hasExemptedBadge && hasExamExemptedPill && markInputDisabled);
+
     await lifecycleAdminContext.close();
   } finally {
     await browser.close();

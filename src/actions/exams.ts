@@ -30,13 +30,13 @@ import {
   computeSnapshotChecksum,
   verifySnapshotChecksum,
 } from "@/lib/exam-snapshot";
-import type {
-  ExamStatus,
-  ExamTargetType,
-  ExamEnrollmentStatus,
-  ExamEvaluationStatus,
-  ExamResultStatus,
+import {
   Prisma,
+  type ExamStatus,
+  type ExamTargetType,
+  type ExamEnrollmentStatus,
+  type ExamEvaluationStatus,
+  type ExamResultStatus,
 } from "@prisma/client";
 
 export type ActionResult<T = unknown> = {
@@ -734,6 +734,21 @@ export async function enrollStudentsAction(input: unknown): Promise<ActionResult
   });
 }
 
+export type PreservedSubjectMark = {
+  examSubjectId: string;
+  markId: string | null;
+  marksObtained: number | null;
+  isAbsent: boolean;
+  isExempted: boolean;
+  evaluationStatus: ExamEvaluationStatus;
+  feedback: string | null;
+  enteredById: string | null;
+  enteredAt: string | null;
+  verifiedById: string | null;
+  verifiedAt: string | null;
+  version: number;
+};
+
 export async function updateEnrollmentStatusAction(input: unknown): Promise<ActionResult> {
   const auth = await authorizeTenantWrite("tenant.exams.enroll", "update");
   if (!auth.ok) return { ok: false, error: auth.error };
@@ -744,17 +759,23 @@ export async function updateEnrollmentStatusAction(input: unknown): Promise<Acti
     return { ok: false, error: parsed.error.issues[0]?.message || "Validation failed" };
   }
 
-  const { enrollmentId, status, remarks } = parsed.data;
+  const { enrollmentId, status, remarks, overwriteExistingMarks } = parsed.data;
 
   return await db.$transaction(async (tx) => {
+    const initialEnrollment = await tx.examEnrollment.findFirst({
+      where: { id: enrollmentId, tenantId: ctx.tenant.id },
+    });
+    if (!initialEnrollment) return { ok: false, error: "Enrollment not found." };
+
+    // 1. Acquire root Examination row lock
+    const lockedExam = await lockExaminationRow(tx, initialEnrollment.examId, ctx.tenant.id);
+    if (!lockedExam) return { ok: false, error: "Examination not found." };
+
+    // Re-fetch enrollment under the root Examination lock to guarantee latest committed state
     const enrollment = await tx.examEnrollment.findFirst({
       where: { id: enrollmentId, tenantId: ctx.tenant.id },
     });
     if (!enrollment) return { ok: false, error: "Enrollment not found." };
-
-    // 1. Acquire root Examination row lock
-    const lockedExam = await lockExaminationRow(tx, enrollment.examId, ctx.tenant.id);
-    if (!lockedExam) return { ok: false, error: "Examination not found." };
 
     if (lockedExam.status === "ARCHIVED") {
       return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify enrollment of an archived examination." };
@@ -766,13 +787,284 @@ export async function updateEnrollmentStatusAction(input: unknown): Promise<Acti
       return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify enrollment of an evaluated examination. Reopen evaluation first." };
     }
 
-    await tx.examEnrollment.update({
-      where: { id: enrollment.id },
-      data: {
-        status: status as ExamEnrollmentStatus,
-        remarks,
+    const membership = await tx.membership.findFirst({
+      where: { userId: ctx.user.id, tenantId: ctx.tenant.id },
+    });
+    const membershipId = membership?.id || null;
+
+    // Fetch configured subjects with subject name for rich reporting
+    const subjects = await tx.examSubject.findMany({
+      where: { examId: enrollment.examId, tenantId: ctx.tenant.id },
+      include: { subject: true },
+      orderBy: { order: "asc" },
+    });
+
+    // Fetch existing marks for this candidate
+    const existingMarks = await tx.examMark.findMany({
+      where: {
+        examId: enrollment.examId,
+        studentId: enrollment.studentId,
+        tenantId: ctx.tenant.id,
       },
     });
+
+    const isExempted = status === "EXEMPTED";
+    const isAbsent = status === "ABSENT";
+
+    if (isExempted || isAbsent) {
+      // FIX F-02: Comprehensive overwrite protection
+      // If the candidate is currently ELIGIBLE (not already in candidate-level override),
+      // detect ANY existing meaningful subject-level data:
+      // - Numeric scores (marksObtained !== null)
+      // - Subject-level absence (isAbsent === true)
+      // - Subject-level exemption (isExempted === true)
+      // - Evaluated status (SUBMITTED or VERIFIED)
+      // - Feedback remarks
+      const isCurrentlyCandidateOverride =
+        (enrollment.status === "EXEMPTED" || enrollment.status === "ABSENT") &&
+        enrollment.preservedMarks !== null;
+
+      if (!isCurrentlyCandidateOverride) {
+        const meaningfulMarks = existingMarks.filter((m) => {
+          const hasScore = m.marksObtained !== null;
+          const isMarkAbsent = m.isAbsent;
+          const isMarkExempted = m.isExempted;
+          const isVerifiedOrSubmitted = m.evaluationStatus === "VERIFIED" || m.evaluationStatus === "SUBMITTED";
+          const hasFeedback = Boolean(m.feedback && m.feedback.trim() !== "");
+          return hasScore || isMarkAbsent || isMarkExempted || isVerifiedOrSubmitted || hasFeedback;
+        });
+
+        if (meaningfulMarks.length > 0 && !overwriteExistingMarks) {
+          const affectedSubjectNames = subjects
+            .filter((s) => meaningfulMarks.some((m) => m.examSubjectId === s.id))
+            .map((s) => s.subject.name);
+
+          const subjectListStr =
+            affectedSubjectNames.length > 0
+              ? ` (${affectedSubjectNames.join(", ")})`
+              : "";
+
+          return {
+            ok: false,
+            code: "EXISTING_MARKS_PRESENT",
+            error: `Candidate has existing entered subject-level records in ${meaningfulMarks.length} subject(s)${subjectListStr}. Explicit confirmation is required to overwrite these marks with candidate-level ${status.toLowerCase()}.`,
+          };
+        }
+      }
+
+      // FIX F-03: Capture and preserve exact pre-override state before applying candidate-level override.
+      // If candidate is already in candidate-level override (e.g. EXEMPTED -> ABSENT), we preserve the original
+      // snapshot stored when candidate was ELIGIBLE. Otherwise, snapshot current state.
+      let preservedToStore = enrollment.preservedMarks as PreservedSubjectMark[] | null;
+
+      if (!preservedToStore || !Array.isArray(preservedToStore) || preservedToStore.length === 0) {
+        preservedToStore = subjects.map((sub) => {
+          const mark = existingMarks.find((m) => m.examSubjectId === sub.id);
+          if (!mark) {
+            return {
+              examSubjectId: sub.id,
+              markId: null,
+              marksObtained: null,
+              isAbsent: false,
+              isExempted: false,
+              evaluationStatus: "PENDING" as ExamEvaluationStatus,
+              feedback: null,
+              enteredById: null,
+              enteredAt: null,
+              verifiedById: null,
+              verifiedAt: null,
+              version: 0,
+            };
+          }
+          return {
+            examSubjectId: sub.id,
+            markId: mark.id,
+            marksObtained: mark.marksObtained !== null ? Number(mark.marksObtained) : null,
+            isAbsent: mark.isAbsent,
+            isExempted: mark.isExempted,
+            evaluationStatus: mark.evaluationStatus,
+            feedback: mark.feedback,
+            enteredById: mark.enteredById,
+            enteredAt: mark.enteredAt ? mark.enteredAt.toISOString() : null,
+            verifiedById: mark.verifiedById,
+            verifiedAt: mark.verifiedAt ? mark.verifiedAt.toISOString() : null,
+            version: mark.version,
+          };
+        });
+      }
+
+      const feedbackTag = isExempted ? "[Candidate Exemption]" : "[Candidate Absent]";
+      const effectiveFeedback = remarks ? `${feedbackTag} ${remarks}` : feedbackTag;
+
+      for (const sub of subjects) {
+        const mark = existingMarks.find((m) => m.examSubjectId === sub.id);
+        if (mark) {
+          await tx.examMark.update({
+            where: { id: mark.id },
+            data: {
+              marksObtained: null,
+              isAbsent,
+              isExempted,
+              evaluationStatus: "VERIFIED",
+              verifiedById: membershipId,
+              verifiedAt: new Date(),
+              version: mark.version + 1,
+              feedback: effectiveFeedback,
+            },
+          });
+
+          await tx.examMarksRevisionEvent.create({
+            data: {
+              tenantId: ctx.tenant.id,
+              examId: enrollment.examId,
+              examSubjectId: sub.id,
+              studentId: enrollment.studentId,
+              markId: mark.id,
+              actorId: ctx.user.id,
+              actorName: ctx.user.name,
+              oldMarks: mark.marksObtained,
+              newMarks: null,
+              oldStatus: mark.evaluationStatus,
+              newStatus: "VERIFIED",
+              reason: remarks ? `Candidate-level ${status}: ${remarks}` : `Candidate-level ${status} applied`,
+            },
+          });
+        } else {
+          const newMark = await tx.examMark.create({
+            data: {
+              tenantId: ctx.tenant.id,
+              examId: enrollment.examId,
+              examSubjectId: sub.id,
+              studentId: enrollment.studentId,
+              enrollmentId: enrollment.id,
+              marksObtained: null,
+              isAbsent,
+              isExempted,
+              evaluationStatus: "VERIFIED",
+              version: 1,
+              enteredById: membershipId,
+              enteredAt: new Date(),
+              verifiedById: membershipId,
+              verifiedAt: new Date(),
+              feedback: effectiveFeedback,
+            },
+          });
+
+          await tx.examMarksRevisionEvent.create({
+            data: {
+              tenantId: ctx.tenant.id,
+              examId: enrollment.examId,
+              examSubjectId: sub.id,
+              studentId: enrollment.studentId,
+              markId: newMark.id,
+              actorId: ctx.user.id,
+              actorName: ctx.user.name,
+              oldMarks: null,
+              newMarks: null,
+              oldStatus: null,
+              newStatus: "VERIFIED",
+              reason: remarks ? `Candidate-level ${status}: ${remarks}` : `Candidate-level ${status} applied`,
+            },
+          });
+        }
+      }
+
+      await tx.examEnrollment.update({
+        where: { id: enrollment.id },
+        data: {
+          status: status as ExamEnrollmentStatus,
+          remarks,
+          preservedMarks: preservedToStore as unknown as Prisma.InputJsonValue,
+        },
+      });
+    } else if (status === "ELIGIBLE" && (enrollment.status === "EXEMPTED" || enrollment.status === "ABSENT")) {
+      // FIX F-03: Reverting to ELIGIBLE restores exact pre-override state
+      const preserved = enrollment.preservedMarks as PreservedSubjectMark[] | null;
+
+      if (!preserved || !Array.isArray(preserved) || preserved.length === 0) {
+        return {
+          ok: false,
+          code: "RESTORATION_STATE_MISSING",
+          error: "Cannot safely restore candidate to ELIGIBLE: pre-override subject marks preservation record is missing or invalid.",
+        };
+      }
+
+      const isValidStructure = preserved.every(
+        (p) =>
+          p &&
+          typeof p === "object" &&
+          typeof p.examSubjectId === "string" &&
+          (p.marksObtained === null || typeof p.marksObtained === "number") &&
+          typeof p.isAbsent === "boolean" &&
+          typeof p.isExempted === "boolean"
+      );
+
+      if (!isValidStructure) {
+        return {
+          ok: false,
+          code: "RESTORATION_STATE_MISSING",
+          error: "Cannot safely restore candidate to ELIGIBLE: pre-override subject marks preservation record is corrupted.",
+        };
+      }
+
+      for (const item of preserved) {
+        const currentMark = existingMarks.find((m) => m.examSubjectId === item.examSubjectId);
+        if (!currentMark) continue;
+
+        // Restore exact pre-override values
+        await tx.examMark.update({
+          where: { id: currentMark.id },
+          data: {
+            marksObtained: item.marksObtained,
+            isAbsent: item.isAbsent,
+            isExempted: item.isExempted,
+            evaluationStatus: item.evaluationStatus || "PENDING",
+            feedback: item.feedback,
+            enteredById: item.enteredById,
+            enteredAt: item.enteredAt ? new Date(item.enteredAt) : null,
+            verifiedById: item.verifiedById,
+            verifiedAt: item.verifiedAt ? new Date(item.verifiedAt) : null,
+            version: currentMark.version + 1,
+          },
+        });
+
+        await tx.examMarksRevisionEvent.create({
+          data: {
+            tenantId: ctx.tenant.id,
+            examId: enrollment.examId,
+            examSubjectId: item.examSubjectId,
+            studentId: enrollment.studentId,
+            markId: currentMark.id,
+            actorId: ctx.user.id,
+            actorName: ctx.user.name,
+            oldMarks: currentMark.marksObtained,
+            newMarks: item.marksObtained,
+            oldStatus: currentMark.evaluationStatus,
+            newStatus: item.evaluationStatus || "PENDING",
+            reason: remarks
+              ? `Candidate status restored to ELIGIBLE: pre-override subject mark restored (${remarks})`
+              : "Candidate status restored to ELIGIBLE: pre-override subject mark restored",
+          },
+        });
+      }
+
+      await tx.examEnrollment.update({
+        where: { id: enrollment.id },
+        data: {
+          status: "ELIGIBLE",
+          remarks,
+          preservedMarks: Prisma.DbNull, // Clear preservation record once successfully restored
+        },
+      });
+    } else {
+      await tx.examEnrollment.update({
+        where: { id: enrollment.id },
+        data: {
+          status: status as ExamEnrollmentStatus,
+          remarks,
+        },
+      });
+    }
 
     await writeAudit(
       {
@@ -782,7 +1074,13 @@ export async function updateEnrollmentStatusAction(input: unknown): Promise<Acti
         action: "exam.enrollment_updated",
         entity: "ExamEnrollment",
         entityId: enrollment.id,
-        meta: { examId: enrollment.examId, newStatus: status, remarks },
+        meta: {
+          examId: enrollment.examId,
+          previousStatus: enrollment.status,
+          newStatus: status,
+          remarks,
+          propagatedSubjectCount: subjects.length,
+        },
       },
       tx
     );
@@ -808,10 +1106,11 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
 
   const { examId, examSubjectId, entries, reason, submitForVerification } = parsed.data;
 
-  return await db.$transaction(async (tx) => {
-    // 1. Acquire root Examination row lock
-    const lockedExam = await lockExaminationRow(tx, examId, ctx.tenant.id);
-    if (!lockedExam) return { ok: false, error: "Examination not found." };
+  try {
+    return await db.$transaction(async (tx) => {
+      // 1. Acquire root Examination row lock
+      const lockedExam = await lockExaminationRow(tx, examId, ctx.tenant.id);
+      if (!lockedExam) return { ok: false, error: "Examination not found." };
 
     if (lockedExam.status === "ARCHIVED") {
       return { ok: false, code: "INVALID_TRANSITION", error: "Cannot modify marks for an archived examination." };
@@ -900,6 +1199,19 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
 
       if (!enrollment || enrollment.status === "WITHDRAWN") continue;
 
+      // Candidate-level exemption or absence locks the candidate out of ordinary numeric marks entry
+      if (
+        (enrollment.status === "EXEMPTED" || enrollment.status === "ABSENT") &&
+        entry.marksObtained !== null &&
+        !entry.isAbsent &&
+        !entry.isExempted
+      ) {
+        return {
+          ok: false,
+          error: `Cannot enter numeric marks for candidate '${entry.studentId}' with candidate-level status '${enrollment.status}'. Revert enrollment to ELIGIBLE first.`,
+        };
+      }
+
       const existingMark = await tx.examMark.findUnique({
         where: {
           examSubjectId_studentId: {
@@ -919,6 +1231,11 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
           );
         }
 
+        // Optimistic concurrency check: verify expected version before applying update
+        if (entry.expectedVersion !== undefined && existingMark.version !== entry.expectedVersion) {
+          throw new Error("STALE_VERSION");
+        }
+
         const isChanged =
           existingMark.marksObtained !== effectiveMarks ||
           existingMark.isAbsent !== entry.isAbsent ||
@@ -926,7 +1243,27 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
           existingMark.evaluationStatus !== targetStatus;
 
         if (isChanged) {
-          // Record auditable revision event
+          const targetVersion = entry.expectedVersion !== undefined ? entry.expectedVersion : existingMark.version;
+
+          const updateRes = await tx.examMark.updateMany({
+            where: { id: existingMark.id, version: targetVersion },
+            data: {
+              marksObtained: effectiveMarks,
+              isAbsent: entry.isAbsent,
+              isExempted: entry.isExempted,
+              feedback: entry.feedback,
+              evaluationStatus: targetStatus,
+              enteredById: membershipId,
+              enteredAt: new Date(),
+              version: { increment: 1 },
+            },
+          });
+
+          if (updateRes.count === 0) {
+            throw new Error("STALE_VERSION");
+          }
+
+          // Record auditable revision event AFTER atomic update verification
           await tx.examMarksRevisionEvent.create({
             data: {
               tenantId: ctx.tenant.id,
@@ -944,23 +1281,6 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
             },
           });
 
-          const updateRes = await tx.examMark.updateMany({
-            where: { id: existingMark.id, version: existingMark.version },
-            data: {
-              marksObtained: effectiveMarks,
-              isAbsent: entry.isAbsent,
-              isExempted: entry.isExempted,
-              feedback: entry.feedback,
-              evaluationStatus: targetStatus,
-              enteredById: membershipId,
-              enteredAt: new Date(),
-              version: { increment: 1 },
-            },
-          });
-
-          if (updateRes.count === 0) {
-            throw new Error(`Concurrent modification detected for candidate ${entry.studentId}. Please reload.`);
-          }
           updatedCount++;
         }
       } else {
@@ -1018,6 +1338,19 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
     revalidatePath(`/app/exams/${examId}`);
     return { ok: true, data: { updatedCount } };
   });
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      if (err.message === "STALE_VERSION") {
+        return {
+          ok: false,
+          code: "STALE_VERSION",
+          error: "The mark has been modified by another process. Please refresh and try again.",
+        };
+      }
+      return { ok: false, error: err.message };
+    }
+    return { ok: false, error: "An unexpected error occurred while entering marks." };
+  }
 }
 
 export async function verifyExamSubjectMarksAction(examId: string, examSubjectId: string): Promise<ActionResult> {
@@ -2165,4 +2498,21 @@ export async function deleteGradeScaleAction(scaleId: string): Promise<ActionRes
 
   revalidatePath("/app/exams/grading");
   return { ok: true };
+}
+
+export async function getExamCompletenessAction(examId: string): Promise<ActionResult<{
+  isValid: boolean;
+  expectedPairsCount: number;
+  verifiedMarksCount: number;
+  eligibleCandidatesCount: number;
+  configuredSubjectsCount: number;
+  errors: string[];
+}>> {
+  const ctx = await getTenantContext();
+  if (!ctx || !hasTenantPermission(ctx, "tenant.exams.read")) {
+    return { ok: false, error: "Unauthorized" };
+  }
+
+  const res = await verifyCandidateSubjectCompleteness(db, examId, ctx.tenant.id);
+  return { ok: true, data: res };
 }
