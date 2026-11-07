@@ -178,6 +178,7 @@ export default async function ExamStudioPage({
       evaluationStatus: existingMark?.evaluationStatus ?? "PENDING",
       enrollmentStatus: enr.status,
       enrollmentId: enr.id,
+      version: existingMark?.version ?? 0,
     };
   });
 

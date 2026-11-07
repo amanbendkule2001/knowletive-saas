@@ -461,11 +461,13 @@ export async function transitionExamStatus(
   });
 
   // 8. If reopening an EVALUATED exam to IN_PROGRESS, unlock marks so teachers can adjust scores
+  // and advance mark version to invalidate any stale marks-entry forms held prior to reopening
   if (lockedExam.status === "EVALUATED" && requestedStatus === "IN_PROGRESS") {
     await tx.examMark.updateMany({
       where: { examId, tenantId: ctx.tenant.id },
       data: {
         evaluationStatus: "SUBMITTED",
+        version: { increment: 1 },
       },
     });
   }

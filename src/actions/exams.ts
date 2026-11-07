@@ -1231,8 +1231,8 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
           );
         }
 
-        // Optimistic concurrency check: verify expected version before applying update
-        if (entry.expectedVersion !== undefined && existingMark.version !== entry.expectedVersion) {
+        // Strict optimistic concurrency: verify client's expectedVersion matches current database version
+        if (existingMark.version !== entry.expectedVersion) {
           throw new Error("STALE_VERSION");
         }
 
@@ -1243,10 +1243,8 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
           existingMark.evaluationStatus !== targetStatus;
 
         if (isChanged) {
-          const targetVersion = entry.expectedVersion !== undefined ? entry.expectedVersion : existingMark.version;
-
           const updateRes = await tx.examMark.updateMany({
-            where: { id: existingMark.id, version: targetVersion },
+            where: { id: existingMark.id, version: entry.expectedVersion },
             data: {
               marksObtained: effectiveMarks,
               isAbsent: entry.isAbsent,
@@ -1284,6 +1282,11 @@ export async function enterMarksBulkAction(input: unknown): Promise<ActionResult
           updatedCount++;
         }
       } else {
+        // For uninitialized marks, client must have read state as non-existent (expectedVersion === 0)
+        if (entry.expectedVersion !== 0) {
+          throw new Error("STALE_VERSION");
+        }
+
         markRecord = await tx.examMark.create({
           data: {
             tenantId: ctx.tenant.id,
@@ -1380,13 +1383,14 @@ export async function verifyExamSubjectMarksAction(examId: string, examSubjectId
     });
     const membershipId = membership?.id || null;
 
-    // Lock all marks for this subject to VERIFIED
+    // Lock all marks for this subject to VERIFIED and increment version to invalidate stale marks-entry forms
     await tx.examMark.updateMany({
       where: { examSubjectId, tenantId: ctx.tenant.id },
       data: {
         evaluationStatus: "VERIFIED",
         verifiedById: membershipId,
         verifiedAt: new Date(),
+        version: { increment: 1 },
       },
     });
 

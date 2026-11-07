@@ -426,6 +426,7 @@ type EnrolledStudent = {
   evaluationStatus: string;
   enrollmentStatus?: string;
   enrollmentId?: string;
+  version: number;
 };
 
 export function MarksEntryGrid({
@@ -457,6 +458,7 @@ export function MarksEntryGrid({
       isAbsent: s.isAbsent,
       isExempted: s.isExempted,
       feedback: s.feedback || "",
+      expectedVersion: s.version,
     }))
   );
 

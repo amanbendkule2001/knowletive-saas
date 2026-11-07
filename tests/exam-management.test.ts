@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
+import type { Examination, ExamSubject, Student, ExamEnrollment } from "@prisma/client";
 
 vi.mock("next/navigation", () => ({
   redirect: vi.fn((url: string) => {
@@ -2438,7 +2439,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
         examId: lifecycleExam.id,
         examSubjectId: subMathLife.id,
         entries: [
-          { studentId: student1.id, marksObtained: 85, isAbsent: false, isExempted: false },
+          { studentId: student1.id, marksObtained: 85, isAbsent: false, isExempted: false, expectedVersion: 0 },
         ],
         reason: "Midterm paper grading",
         submitForVerification: false,
@@ -2475,7 +2476,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
         examId: lifecycleExam.id,
         examSubjectId: subMathLife.id,
         entries: [
-          { studentId: student2.id, marksObtained: 90, isAbsent: false, isExempted: false },
+          { studentId: student2.id, marksObtained: 90, isAbsent: false, isExempted: false, expectedVersion: 0 },
         ],
         reason: "Grading student 2",
         submitForVerification: false,
@@ -2485,8 +2486,8 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
         examId: lifecycleExam.id,
         examSubjectId: subSciLife.id,
         entries: [
-          { studentId: student1.id, marksObtained: 78, isAbsent: false, isExempted: false },
-          { studentId: student2.id, marksObtained: 88, isAbsent: false, isExempted: false },
+          { studentId: student1.id, marksObtained: 78, isAbsent: false, isExempted: false, expectedVersion: 0 },
+          { studentId: student2.id, marksObtained: 88, isAbsent: false, isExempted: false, expectedVersion: 0 },
         ],
         reason: "Science grading",
         submitForVerification: false,
@@ -2686,7 +2687,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
       const enterMarksArchived = await enterMarksBulkAction({
         examId: lifecycleExam.id,
         examSubjectId: subMathLife.id,
-        entries: [{ studentId: student1.id, marksObtained: 99, isAbsent: false, isExempted: false }],
+        entries: [{ studentId: student1.id, marksObtained: 99, isAbsent: false, isExempted: false, expectedVersion: 1 }],
         reason: "Post-archival illegal update",
       });
       expect(enterMarksArchived.ok).toBe(false);
@@ -2790,13 +2791,13 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
       await enterMarksBulkAction({
         examId: diffExam.id,
         examSubjectId: dSub1.id,
-        entries: [{ studentId: student1.id, marksObtained: 85, isAbsent: false, isExempted: false }],
+        entries: [{ studentId: student1.id, marksObtained: 85, isAbsent: false, isExempted: false, expectedVersion: 0 }],
         reason: "Student 1 Math score",
       });
       await enterMarksBulkAction({
         examId: diffExam.id,
         examSubjectId: dSub2.id,
-        entries: [{ studentId: student1.id, marksObtained: 75, isAbsent: false, isExempted: false }],
+        entries: [{ studentId: student1.id, marksObtained: 75, isAbsent: false, isExempted: false, expectedVersion: 0 }],
         reason: "Student 1 Science score",
       });
 
@@ -2804,13 +2805,13 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
       await enterMarksBulkAction({
         examId: diffExam.id,
         examSubjectId: dSub1.id,
-        entries: [{ studentId: student2.id, marksObtained: 90, isAbsent: false, isExempted: false }],
+        entries: [{ studentId: student2.id, marksObtained: 90, isAbsent: false, isExempted: false, expectedVersion: 0 }],
         reason: "Student 2 Math score",
       });
       await enterMarksBulkAction({
         examId: diffExam.id,
         examSubjectId: dSub2.id,
-        entries: [{ studentId: student2.id, marksObtained: null, isAbsent: false, isExempted: true }],
+        entries: [{ studentId: student2.id, marksObtained: null, isAbsent: false, isExempted: true, expectedVersion: 0 }],
         reason: "Student 2 officially exempted from Science by Academic Board",
       });
 
@@ -2919,7 +2920,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
         enterMarksBulkAction({
           examId: concExam.id,
           examSubjectId: sub1.id,
-          entries: [{ studentId: student1.id, marksObtained: 88, isAbsent: false, isExempted: false }],
+          entries: [{ studentId: student1.id, marksObtained: 88, isAbsent: false, isExempted: false, expectedVersion: 1 }],
           reason: "Concurrent mark adjustment",
         }),
         calculateAndPublishResultsAction({ examId: concExam.id }),
@@ -3240,8 +3241,8 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
         examId: concExam.id,
         examSubjectId: mathSub.id,
         entries: [
-          { studentId: student1.id, marksObtained: 90, isAbsent: false, isExempted: false },
-          { studentId: student2.id, marksObtained: 70, isAbsent: false, isExempted: false },
+          { studentId: student1.id, marksObtained: 90, isAbsent: false, isExempted: false, expectedVersion: 0 },
+          { studentId: student2.id, marksObtained: 70, isAbsent: false, isExempted: false, expectedVersion: 0 },
         ],
         submitForVerification: true,
         reason: "Initial marks submission",
@@ -3508,6 +3509,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
             isAbsent: false,
             isExempted: false,
             feedback: "Mid-term submission",
+            expectedVersion: 0,
           },
         ],
         reason: "Entering regular score",
@@ -3604,6 +3606,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
             marksObtained: 95,
             isAbsent: false,
             isExempted: false,
+            expectedVersion: 1,
           },
         ],
         reason: "Illegal numeric entry for exempted candidate",
@@ -5235,7 +5238,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
         enterMarksBulkAction({
           examId: s14Exam.id,
           examSubjectId: s14SubMath.id,
-          entries: [{ studentId: raceStudent.id, marksObtained: 92, isAbsent: false, isExempted: false }],
+          entries: [{ studentId: raceStudent.id, marksObtained: 92, isAbsent: false, isExempted: false, expectedVersion: 1 }],
           reason: "Concurrent mark entry race",
           submitForVerification: false,
         }),
@@ -5577,6 +5580,832 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
       if (sample) {
         expect(sample.preservedMarks).toBeDefined();
       }
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // Section 15: Stage 4.3 Step 3.3 — Mandatory Optimistic Concurrency Enforcement Audit
+  // ─────────────────────────────────────────────────────────────
+  describe("Section 15: Stage 4.3 Step 3.3 — Mandatory Optimistic Concurrency Enforcement Audit", () => {
+    let s15Exam: Examination;
+    let s15SubMath: ExamSubject;
+    let s15Student1: Student;
+    let s15Student2: Student;
+    let s15Student3: Student;
+    let s15Enr1: ExamEnrollment;
+    let s15Enr2: ExamEnrollment;
+    let s15Enr3: ExamEnrollment;
+
+    beforeAll(async () => {
+      const mem = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      s15Exam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Stage 4.3 Step 3.3 OCC Audit Exam",
+          code: `S15-OCC-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          isPublished: false,
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: mem!.id,
+        },
+      });
+      createdExamIds.push(s15Exam.id);
+
+      s15SubMath = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s15Exam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-20"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      s15Student1 = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "OCC1",
+          lastName: "AuditStudent",
+          admissionNo: `S15-01-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(s15Student1.id);
+
+      s15Student2 = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "OCC2",
+          lastName: "AuditStudent",
+          admissionNo: `S15-02-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(s15Student2.id);
+
+      s15Student3 = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "OCC3",
+          lastName: "AuditStudent",
+          admissionNo: `S15-03-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(s15Student3.id);
+
+      s15Enr1 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s15Exam.id, studentId: s15Student1.id, status: "ELIGIBLE" },
+      });
+      s15Enr2 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s15Exam.id, studentId: s15Student2.id, status: "ELIGIBLE" },
+      });
+      s15Enr3 = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s15Exam.id, studentId: s15Student3.id, status: "ELIGIBLE" },
+      });
+    });
+
+    it("1. Missing expectedVersion is strictly rejected by schema validation without touching DB", async () => {
+      // Intentionally omit expectedVersion
+      const res = await enterMarksBulkAction({
+        examId: s15Exam.id,
+        examSubjectId: s15SubMath.id,
+        entries: [
+          {
+            studentId: s15Student1.id,
+            marksObtained: 80,
+            isAbsent: false,
+            isExempted: false,
+            // expectedVersion omitted
+          } as unknown as Record<string, unknown>,
+        ],
+        reason: "Missing expectedVersion submission",
+      });
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toBeDefined();
+
+      // Database mark must NOT be created
+      const mark = await db.examMark.findFirst({
+        where: { examSubjectId: s15SubMath.id, studentId: s15Student1.id },
+      });
+      expect(mark).toBeNull();
+    });
+
+    it("2. Null expectedVersion is strictly rejected by schema validation without touching DB", async () => {
+      // Pass explicit null
+      const res = await enterMarksBulkAction({
+        examId: s15Exam.id,
+        examSubjectId: s15SubMath.id,
+        entries: [
+          {
+            studentId: s15Student1.id,
+            marksObtained: 80,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: null,
+          } as unknown as Record<string, unknown>,
+        ],
+        reason: "Null expectedVersion submission",
+      });
+
+      expect(res.ok).toBe(false);
+      expect(res.error).toBeDefined();
+
+      const mark = await db.examMark.findFirst({
+        where: { examSubjectId: s15SubMath.id, studentId: s15Student1.id },
+      });
+      expect(mark).toBeNull();
+    });
+
+    it("3. Invalid expectedVersion (negative, fractional, string) is strictly rejected", async () => {
+      // Negative
+      const resNeg = await enterMarksBulkAction({
+        examId: s15Exam.id,
+        examSubjectId: s15SubMath.id,
+        entries: [
+          {
+            studentId: s15Student1.id,
+            marksObtained: 80,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: -1,
+          },
+        ],
+        reason: "Negative expectedVersion",
+      });
+      expect(resNeg.ok).toBe(false);
+
+      // Fractional
+      const resFrac = await enterMarksBulkAction({
+        examId: s15Exam.id,
+        examSubjectId: s15SubMath.id,
+        entries: [
+          {
+            studentId: s15Student1.id,
+            marksObtained: 80,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 1.5,
+          },
+        ],
+        reason: "Fractional expectedVersion",
+      });
+      expect(resFrac.ok).toBe(false);
+
+      // String
+      const resStr = await enterMarksBulkAction({
+        examId: s15Exam.id,
+        examSubjectId: s15SubMath.id,
+        entries: [
+          {
+            studentId: s15Student1.id,
+            marksObtained: 80,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: "one" as unknown as number,
+          },
+        ],
+        reason: "String expectedVersion",
+      });
+      expect(resStr.ok).toBe(false);
+    });
+
+    it("4 & 5. Stale expectedVersion is rejected with STALE_VERSION while correct expectedVersion succeeds and advances", async () => {
+      // Create initial mark at version 2
+      const mark = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s15Exam.id,
+          examSubjectId: s15SubMath.id,
+          studentId: s15Student1.id,
+          enrollmentId: s15Enr1.id,
+          marksObtained: 60,
+          evaluationStatus: "DRAFT",
+          version: 2,
+        },
+      });
+
+      // 4. Stale submission: passing expectedVersion: 1 when current version is 2
+      const staleRes = await enterMarksBulkAction({
+        examId: s15Exam.id,
+        examSubjectId: s15SubMath.id,
+        entries: [
+          {
+            studentId: s15Student1.id,
+            marksObtained: 75,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 1, // Stale!
+          },
+        ],
+        reason: "Stale mark submission test",
+      });
+
+      expect(staleRes.ok).toBe(false);
+      expect(staleRes.code).toBe("STALE_VERSION");
+      expect(staleRes.error).toContain("modified by another process");
+
+      // Verify mark remains at version 2 and score 60
+      const untouchedMark = await db.examMark.findUnique({ where: { id: mark.id } });
+      expect(untouchedMark?.version).toBe(2);
+      expect(Number(untouchedMark?.marksObtained)).toBe(60);
+
+      // 5. Fresh submission: passing correct expectedVersion: 2 succeeds and advances to 3
+      const freshRes = await enterMarksBulkAction({
+        examId: s15Exam.id,
+        examSubjectId: s15SubMath.id,
+        entries: [
+          {
+            studentId: s15Student1.id,
+            marksObtained: 85,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 2, // Correct!
+          },
+        ],
+        reason: "Fresh mark submission test",
+      });
+
+      expect(freshRes.ok).toBe(true);
+
+      const updatedMark = await db.examMark.findUnique({ where: { id: mark.id } });
+      expect(updatedMark?.version).toBe(3); // Advanced exactly once: 2 -> 3
+      expect(Number(updatedMark?.marksObtained)).toBe(85);
+    });
+
+    it("6. Two concurrent requests with the same expectedVersion: exactly one succeeds and one fails with STALE_VERSION", async () => {
+      // Mark is now at version 3
+      const currentMark = await db.examMark.findFirst({
+        where: { examSubjectId: s15SubMath.id, studentId: s15Student1.id },
+      });
+      expect(currentMark?.version).toBe(3);
+
+      const [resA, resB] = await Promise.all([
+        enterMarksBulkAction({
+          examId: s15Exam.id,
+          examSubjectId: s15SubMath.id,
+          entries: [
+            {
+              studentId: s15Student1.id,
+              marksObtained: 90,
+              isAbsent: false,
+              isExempted: false,
+              expectedVersion: 3,
+            },
+          ],
+          reason: "Concurrent racer A",
+        }),
+        enterMarksBulkAction({
+          examId: s15Exam.id,
+          examSubjectId: s15SubMath.id,
+          entries: [
+            {
+              studentId: s15Student1.id,
+              marksObtained: 95,
+              isAbsent: false,
+              isExempted: false,
+              expectedVersion: 3,
+            },
+          ],
+          reason: "Concurrent racer B",
+        }),
+      ]);
+
+      const successes = [resA, resB].filter((r) => r.ok);
+      const failures = [resA, resB].filter((r) => !r.ok);
+
+      expect(successes).toHaveLength(1);
+      expect(failures).toHaveLength(1);
+      expect(failures[0].code).toBe("STALE_VERSION");
+
+      const finalMark = await db.examMark.findUnique({ where: { id: currentMark!.id } });
+      expect(finalMark?.version).toBe(4); // Advanced 3 -> 4, never 5
+    });
+
+    it("7, 8 & 9. Bulk transaction atomicity: multi-candidate bulk request with one stale entry rolls back entirely", async () => {
+      // Setup: Seed Student 2 and Student 3 with known marks and versions
+      const mark2 = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s15Exam.id,
+          examSubjectId: s15SubMath.id,
+          studentId: s15Student2.id,
+          enrollmentId: s15Enr2.id,
+          marksObtained: 50,
+          evaluationStatus: "DRAFT",
+          version: 1,
+        },
+      });
+
+      const mark3 = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s15Exam.id,
+          examSubjectId: s15SubMath.id,
+          studentId: s15Student3.id,
+          enrollmentId: s15Enr3.id,
+          marksObtained: 60,
+          evaluationStatus: "DRAFT",
+          version: 1,
+        },
+      });
+
+      // Count revision events before bulk request
+      const revsBefore2 = await db.examMarksRevisionEvent.count({ where: { markId: mark2.id } });
+      const revsBefore3 = await db.examMarksRevisionEvent.count({ where: { markId: mark3.id } });
+
+      // Teacher submits bulk update:
+      // Entry 1 (Student 2): valid expectedVersion 1 (would succeed)
+      // Entry 2 (Student 1): stale expectedVersion 99 (STALE CONFLICT!)
+      // Entry 3 (Student 3): valid expectedVersion 1 (would succeed)
+      const bulkRes = await enterMarksBulkAction({
+        examId: s15Exam.id,
+        examSubjectId: s15SubMath.id,
+        entries: [
+          {
+            studentId: s15Student2.id,
+            marksObtained: 70, // Changed from 50
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 1, // Valid
+          },
+          {
+            studentId: s15Student1.id,
+            marksObtained: 99,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 99, // STALE! (Current is 4)
+          },
+          {
+            studentId: s15Student3.id,
+            marksObtained: 80, // Changed from 60
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 1, // Valid
+          },
+        ],
+        reason: "Atomic bulk test with one stale candidate",
+      });
+
+      // 7. Request fails with STALE_VERSION
+      expect(bulkRes.ok).toBe(false);
+      expect(bulkRes.code).toBe("STALE_VERSION");
+      expect(bulkRes.error).toContain("modified by another process");
+
+      // 8. Transaction rollback: Student 2's mark was NOT updated to 70!
+      const mark2Check = await db.examMark.findUnique({ where: { id: mark2.id } });
+      expect(Number(mark2Check?.marksObtained)).toBe(50); // Untouched!
+      expect(mark2Check?.version).toBe(1);
+
+      // Student 3's mark was NOT updated to 80!
+      const mark3Check = await db.examMark.findUnique({ where: { id: mark3.id } });
+      expect(Number(mark3Check?.marksObtained)).toBe(60); // Untouched!
+      expect(mark3Check?.version).toBe(1);
+
+      // 9. Revision event correctness: ZERO revision events created for any candidate from aborted batch
+      const revsAfter2 = await db.examMarksRevisionEvent.count({ where: { markId: mark2.id } });
+      const revsAfter3 = await db.examMarksRevisionEvent.count({ where: { markId: mark3.id } });
+      expect(revsAfter2).toBe(revsBefore2);
+      expect(revsAfter3).toBe(revsBefore3);
+    });
+
+    it("10. Frontend MarksEntryGrid contract: initializes and submits correct version tokens", async () => {
+      // Simulate constructing markGridStudents as page.tsx does
+      const examWithMarks = await db.examination.findUnique({
+        where: { id: s15Exam.id },
+        include: {
+          subjects: { include: { subject: true } },
+          enrollments: {
+            include: {
+              student: true,
+              marks: true,
+            },
+          },
+        },
+      });
+
+      const currentSub = examWithMarks!.subjects[0];
+      const gridStudents = examWithMarks!.enrollments.map((enr) => {
+        const mark = enr.marks.find((m) => m.examSubjectId === currentSub.id);
+        return {
+          id: enr.student.id,
+          name: `${enr.student.firstName} ${enr.student.lastName}`,
+          admissionNo: enr.student.admissionNo,
+          rollNumber: enr.rollNumber,
+          currentMarks: mark?.marksObtained ?? null,
+          isAbsent: mark?.isAbsent ?? false,
+          isExempted: mark?.isExempted ?? false,
+          feedback: mark?.feedback ?? null,
+          evaluationStatus: mark?.evaluationStatus ?? "PENDING",
+          enrollmentStatus: enr.status,
+          enrollmentId: enr.id,
+          version: mark?.version ?? 0, // Contract: version always non-null number
+        };
+      });
+
+      // Verify every student has a valid non-negative integer version
+      expect(gridStudents.length).toBeGreaterThan(0);
+      for (const gs of gridStudents) {
+        expect(typeof gs.version).toBe("number");
+        expect(Number.isInteger(gs.version)).toBe(true);
+        expect(gs.version).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    it("11. Alternate mark update paths enforce equivalent concurrency and version safeguards", async () => {
+      // Temporarily mark exam as published to test published correction concurrency
+      await db.examination.update({
+        where: { id: s15Exam.id },
+        data: { isPublished: true, status: "PUBLISHED" },
+      });
+
+      const mark = await db.examMark.findFirst({
+        where: { examSubjectId: s15SubMath.id, studentId: s15Student1.id },
+      });
+
+      const invalidCorrection = await correctPublishedMarkAction({
+        examId: s15Exam.id,
+        examSubjectId: s15SubMath.id,
+        studentId: s15Student1.id,
+        newMark: 90,
+        expectedVersion: 99, // Stale!
+        reason: "Stale correction check justifying at least 10 chars",
+      });
+      expect(invalidCorrection.ok).toBe(false);
+      expect(invalidCorrection.code).toBe("STALE_VERSION");
+
+      // Revert exam status back to IN_PROGRESS for candidate enrollment status action
+      await db.examination.update({
+        where: { id: s15Exam.id },
+        data: { isPublished: false, status: "IN_PROGRESS" },
+      });
+
+      // Verify updateEnrollmentStatusAction increments version monotonically
+      const beforeOverride = await db.examMark.findUnique({ where: { id: mark!.id } });
+      const currentVer = beforeOverride!.version;
+
+      const overrideRes = await updateEnrollmentStatusAction({
+        enrollmentId: s15Enr1.id,
+        status: "EXEMPTED",
+        overwriteExistingMarks: true,
+      });
+      expect(overrideRes.ok).toBe(true);
+
+      const afterOverride = await db.examMark.findUnique({ where: { id: mark!.id } });
+      expect(afterOverride?.version).toBe(currentVer + 1); // Strictly incremented
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // Section 16: Stage 4.3 Step 3.3.1 — Mark Version Invalidation During Verification & Reopening
+  // ─────────────────────────────────────────────────────────────
+  describe("Section 16: Stage 4.3 Step 3.3.1 — Mark Version Invalidation During Verification & Reopening", () => {
+    let s16Exam: Examination;
+    let s16Sub: ExamSubject;
+    let s16Student: Student;
+    let s16Enr: ExamEnrollment;
+
+    beforeAll(async () => {
+      const mem = await db.membership.findFirst({ where: { tenantId: tenantA.id } });
+      s16Exam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          title: "Stage 4.3 Step 3.3.1 Invalidation Audit Exam",
+          code: `S16-INV-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "IN_PROGRESS",
+          isPublished: false,
+          startDate: new Date("2026-11-20"),
+          endDate: new Date("2026-11-25"),
+          createdById: mem!.id,
+        },
+      });
+      createdExamIds.push(s16Exam.id);
+
+      s16Sub = await db.examSubject.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s16Exam.id,
+          subjectId: subjectMath.id,
+          examDate: new Date("2026-11-20"),
+          maxMarks: 100,
+          passingMarks: 35,
+          order: 1,
+        },
+      });
+
+      s16Student = await db.student.create({
+        data: {
+          tenantId: tenantA.id,
+          firstName: "Invalidation",
+          lastName: "Candidate",
+          admissionNo: `S16-01-${Date.now().toString().slice(-6)}`,
+          classId: classA.id,
+          status: "ACTIVE",
+        },
+      });
+      createdStudentIds.push(s16Student.id);
+
+      s16Enr = await db.examEnrollment.create({
+        data: { tenantId: tenantA.id, examId: s16Exam.id, studentId: s16Student.id, status: "ELIGIBLE" },
+      });
+    });
+
+    it("1. Mark version strictly increments upon subject marks verification (5 -> 6)", async () => {
+      // 1. Seed initial mark at version 5
+      const mark = await db.examMark.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: s16Exam.id,
+          examSubjectId: s16Sub.id,
+          studentId: s16Student.id,
+          enrollmentId: s16Enr.id,
+          marksObtained: 75,
+          evaluationStatus: "SUBMITTED",
+          version: 5,
+        },
+      });
+      expect(mark.version).toBe(5);
+
+      // 2. Department Head verifies subject marks
+      const verifyRes = await verifyExamSubjectMarksAction(s16Exam.id, s16Sub.id);
+      expect(verifyRes.ok).toBe(true);
+
+      const verifiedMark = await db.examMark.findUnique({ where: { id: mark.id } });
+      expect(verifiedMark?.evaluationStatus).toBe("VERIFIED");
+      // Must advance from 5 to 6 to invalidate any marks-entry forms held prior to verification
+      expect(verifiedMark?.version).toBe(6);
+    });
+
+    it("2. Mark version strictly increments upon evaluation reopening (6 -> 7)", async () => {
+      // Exam was transitioned to EVALUATED when subject marks were verified
+      const evaluatedExam = await db.examination.findUnique({ where: { id: s16Exam.id } });
+      expect(evaluatedExam?.status).toBe("EVALUATED");
+
+      // Principal reopens evaluation to permit examiner adjustments
+      const reopenRes = await reopenEvaluatedExamAction({
+        examId: s16Exam.id,
+        reason: "Reopening assessment to allow teacher mark adjustments after audit",
+      });
+      expect(reopenRes.ok).toBe(true);
+
+      const reopenedExam = await db.examination.findUnique({ where: { id: s16Exam.id } });
+      expect(reopenedExam?.status).toBe("IN_PROGRESS");
+
+      // Mark status must unlock to SUBMITTED and version must advance 6 -> 7
+      const reopenedMark = await db.examMark.findFirst({
+        where: { examSubjectId: s16Sub.id, studentId: s16Student.id },
+      });
+      expect(reopenedMark?.evaluationStatus).toBe("SUBMITTED");
+      expect(reopenedMark?.version).toBe(7);
+    });
+
+    it("3. Stale browser submission holding pre-verification token (5) is rejected with STALE_VERSION after reopening (7)", async () => {
+      // A teacher who opened the page before verification submits marks using old expectedVersion: 5
+      const staleRes = await enterMarksBulkAction({
+        examId: s16Exam.id,
+        examSubjectId: s16Sub.id,
+        entries: [
+          {
+            studentId: s16Student.id,
+            marksObtained: 80,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 5, // Stale pre-verification version!
+          },
+        ],
+        reason: "Stale teacher submission attempt after reopening",
+      });
+
+      expect(staleRes.ok).toBe(false);
+      expect(staleRes.code).toBe("STALE_VERSION");
+      expect(staleRes.error).toContain("modified by another process");
+
+      // Mark remains at version 7 and unmodified (75)
+      const currentMark = await db.examMark.findFirst({
+        where: { examSubjectId: s16Sub.id, studentId: s16Student.id },
+      });
+      expect(currentMark?.version).toBe(7);
+      expect(Number(currentMark?.marksObtained)).toBe(75);
+    });
+
+    it("4. Fresh marks submission using current post-reopening token (7) succeeds and advances to 8", async () => {
+      // Teacher reloads form, observes current version 7, and submits new score 85
+      const freshRes = await enterMarksBulkAction({
+        examId: s16Exam.id,
+        examSubjectId: s16Sub.id,
+        entries: [
+          {
+            studentId: s16Student.id,
+            marksObtained: 85,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: 7, // Fresh current version!
+          },
+        ],
+        reason: "Fresh post-reopening score adjustment",
+      });
+
+      expect(freshRes.ok).toBe(true);
+
+      const finalMark = await db.examMark.findFirst({
+        where: { examSubjectId: s16Sub.id, studentId: s16Student.id },
+      });
+      expect(finalMark?.version).toBe(8); // Advanced 7 -> 8
+      expect(Number(finalMark?.marksObtained)).toBe(85);
+    });
+
+    it("5. Concurrent verification versus marks entry serializes cleanly without version conflict or deadlock", async () => {
+      // Current mark is at version 8
+      const mark = await db.examMark.findFirst({
+        where: { examSubjectId: s16Sub.id, studentId: s16Student.id },
+      });
+      expect(mark?.version).toBe(8);
+
+      // Concurrent race: Teacher submits marks with expectedVersion 8, while Head verifies marks
+      const [resMarks, resVerify] = await Promise.all([
+        enterMarksBulkAction({
+          examId: s16Exam.id,
+          examSubjectId: s16Sub.id,
+          entries: [
+            {
+              studentId: s16Student.id,
+              marksObtained: 90,
+              isAbsent: false,
+              isExempted: false,
+              expectedVersion: 8,
+            },
+          ],
+          reason: "Concurrent marks entry race",
+        }),
+        verifyExamSubjectMarksAction(s16Exam.id, s16Sub.id),
+      ]);
+
+      // Both coordinate through lockExaminationRow:
+      // Case A: Marks entry ran first (succeeded -> version 9), then verification locked it (succeeded -> version 10).
+      // Case B: Verification ran first (succeeded -> version 9, VERIFIED), then marks entry failed (marks locked/stale).
+      // Either way, at least one succeeded and version advanced monotonically
+      expect(resMarks.ok || resVerify.ok).toBe(true);
+
+      const markAfterRace = await db.examMark.findFirst({
+        where: { examSubjectId: s16Sub.id, studentId: s16Student.id },
+      });
+      expect(markAfterRace?.version).toBeGreaterThanOrEqual(9);
+    });
+
+    it("6. Concurrent reopening versus marks entry enforces lifecycle and version boundaries", async () => {
+      // Re-verify to ensure exam is EVALUATED
+      await verifyExamSubjectMarksAction(s16Exam.id, s16Sub.id);
+      const evalExam = await db.examination.findUnique({ where: { id: s16Exam.id } });
+      expect(evalExam?.status).toBe("EVALUATED");
+
+      const markBefore = await db.examMark.findFirst({
+        where: { examSubjectId: s16Sub.id, studentId: s16Student.id },
+      });
+
+      // Concurrent race: Teacher tries to enter marks with previous version while admin reopens
+      const [resMarks, resReopen] = await Promise.all([
+        enterMarksBulkAction({
+          examId: s16Exam.id,
+          examSubjectId: s16Sub.id,
+          entries: [
+            {
+              studentId: s16Student.id,
+              marksObtained: 95,
+              isAbsent: false,
+              isExempted: false,
+              expectedVersion: markBefore!.version,
+            },
+          ],
+          reason: "Concurrent edit during reopening",
+        }),
+        reopenEvaluatedExamAction({
+          examId: s16Exam.id,
+          reason: "Concurrent reopening to permit mark adjustments",
+        }),
+      ]);
+
+      expect(resReopen.ok).toBe(true);
+      // If marks entry executed before reopening finished, it failed because exam was EVALUATED.
+      // If marks entry executed after reopening, reopening advanced the version so it failed with STALE_VERSION.
+      expect(resMarks.ok).toBe(false);
+
+      const examAfter = await db.examination.findUnique({ where: { id: s16Exam.id } });
+      expect(examAfter?.status).toBe("IN_PROGRESS");
+    });
+
+    it("7. Full lifecycle monotonicity: version advances monotonically across verify, reopen, and edits", async () => {
+      const mark = await db.examMark.findFirst({
+        where: { examSubjectId: s16Sub.id, studentId: s16Student.id },
+      });
+      const vStart = mark!.version;
+
+      // 1. Edit marks with current version: vStart -> vStart + 1
+      const edit1 = await enterMarksBulkAction({
+        examId: s16Exam.id,
+        examSubjectId: s16Sub.id,
+        entries: [
+          {
+            studentId: s16Student.id,
+            marksObtained: 92,
+            isAbsent: false,
+            isExempted: false,
+            expectedVersion: vStart,
+          },
+        ],
+        reason: "Monotonicity test edit 1",
+      });
+      expect(edit1.ok).toBe(true);
+
+      const m1 = await db.examMark.findFirst({ where: { id: mark!.id } });
+      expect(m1?.version).toBe(vStart + 1);
+
+      // 2. Verify marks: advances vStart + 1 -> vStart + 2
+      const ver1 = await verifyExamSubjectMarksAction(s16Exam.id, s16Sub.id);
+      expect(ver1.ok).toBe(true);
+
+      const m2 = await db.examMark.findFirst({ where: { id: mark!.id } });
+      expect(m2?.version).toBe(vStart + 2);
+
+      // 3. Reopen evaluation: advances vStart + 2 -> vStart + 3
+      const reop1 = await reopenEvaluatedExamAction({
+        examId: s16Exam.id,
+        reason: "Monotonicity test reopening verification",
+      });
+      expect(reop1.ok).toBe(true);
+
+      const m3 = await db.examMark.findFirst({ where: { id: mark!.id } });
+      expect(m3?.version).toBe(vStart + 3);
+
+      // Version strictly monotonic: vStart < vStart+1 < vStart+2 < vStart+3
+      expect(m3!.version).toBeGreaterThan(m2!.version);
+      expect(m2!.version).toBeGreaterThan(m1!.version);
+      expect(m1!.version).toBeGreaterThan(vStart);
+    });
+
+    it("8. Audit and revision event correctness: verify and reopen emit audit logs without duplicate revision rows", async () => {
+      const revsBefore = await db.examMarksRevisionEvent.count({ where: { examId: s16Exam.id } });
+
+      // Verification emits AuditLog, not ExamMarksRevisionEvent
+      await verifyExamSubjectMarksAction(s16Exam.id, s16Sub.id);
+      const revsAfterVerify = await db.examMarksRevisionEvent.count({ where: { examId: s16Exam.id } });
+      expect(revsAfterVerify).toBe(revsBefore); // Zero duplicate score revision rows
+
+      // Reopening emits AuditLog, not ExamMarksRevisionEvent
+      await reopenEvaluatedExamAction({
+        examId: s16Exam.id,
+        reason: "Audit correctness verification reopening",
+      });
+      const revsAfterReopen = await db.examMarksRevisionEvent.count({ where: { examId: s16Exam.id } });
+      expect(revsAfterReopen).toBe(revsBefore); // Zero duplicate score revision rows
+
+      // AuditLog entries exist for both operations
+      const verifyAudit = await db.auditLog.findFirst({
+        where: { action: "exam.marks_verified", entityId: s16Sub.id },
+      });
+      expect(verifyAudit).not.toBeNull();
+
+      const reopenAudit = await db.auditLog.findFirst({
+        where: { action: "exam.status_transition", entityId: s16Exam.id },
+      });
+      expect(reopenAudit).not.toBeNull();
+    });
+
+    it("9. Lifecycle and tenant authorization restrictions remain strictly enforced", async () => {
+      // Mock authorization failure for verify
+      vi.mocked(authorizeTenantWrite).mockResolvedValueOnce({
+        ok: false,
+        error: "Forbidden: Missing permission tenant.exams.verify_marks",
+      });
+      const deniedVerify = await verifyExamSubjectMarksAction(s16Exam.id, s16Sub.id);
+      expect(deniedVerify.ok).toBe(false);
+
+      // Mock authorization failure for reopen
+      vi.mocked(authorizeTenantWrite).mockResolvedValueOnce({
+        ok: false,
+        error: "Forbidden: Missing permission tenant.exams.manage_grading",
+      });
+      const deniedReopen = await reopenEvaluatedExamAction({
+        examId: s16Exam.id,
+        reason: "Unauthorized attempt",
+      });
+      expect(deniedReopen.ok).toBe(false);
     });
   });
 });

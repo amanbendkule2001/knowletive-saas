@@ -200,7 +200,10 @@ export const markEntryItemSchema = z
     isAbsent: z.boolean().default(false),
     isExempted: z.boolean().default(false),
     feedback: z.string().nullish().transform((v) => v || null),
-    expectedVersion: z.coerce.number().int().optional(),
+    expectedVersion: z
+      .number()
+      .int("expectedVersion must be an integer")
+      .min(0, "expectedVersion must be non-negative (0 for uninitialized marks, >= 1 for existing marks)"),
   })
   .superRefine((data, ctx) => {
     if (data.isAbsent && data.isExempted) {
