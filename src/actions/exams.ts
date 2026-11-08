@@ -31,6 +31,7 @@ import {
   computeSnapshotChecksum,
   verifySnapshotChecksum,
 } from "@/lib/exam-snapshot";
+import { escapeCsvCell } from "@/lib/csv";
 import {
   Prisma,
   type ExamStatus,
@@ -2352,19 +2353,6 @@ export async function exportExamResultsCsvAction(
     where: { examId, tenantId: ctx.tenant.id },
   });
 
-  const escapeCsv = (str: string | number | null | undefined): string => {
-    if (str === null || str === undefined) return "";
-    let s = String(str);
-    // Formula Injection Defense (CSV injection / DDE prevention for =, +, -, @)
-    if (/^[=+\-@]/.test(s)) {
-      s = `'${s}`;
-    }
-    if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
-      return `"${s.replace(/"/g, '""')}"`;
-    }
-    return s;
-  };
-
   const headers = [
     "Rank",
     "Admission No",
@@ -2379,7 +2367,7 @@ export async function exportExamResultsCsvAction(
     "Result Status",
   ];
 
-  const rows: string[] = [headers.map(escapeCsv).join(",")];
+  const rows: string[] = [headers.map(escapeCsvCell).join(",")];
 
   for (const res of exam.results) {
     const studentMarks = marks.filter((m) => m.studentId === res.studentId);
@@ -2405,7 +2393,7 @@ export async function exportExamResultsCsvAction(
       res.gradePoint ?? "-",
       res.resultStatus,
     ];
-    rows.push(row.map(escapeCsv).join(","));
+    rows.push(row.map(escapeCsvCell).join(","));
   }
 
   const csvContent = rows.join("\r\n");

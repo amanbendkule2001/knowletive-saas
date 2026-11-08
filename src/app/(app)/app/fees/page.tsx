@@ -3,7 +3,6 @@ import { redirect } from "next/navigation";
 import type { FeeStatus, Prisma } from "@prisma/client";
 import {
   CircleDollarSign,
-  Download,
   Plus,
   ReceiptText,
   Search,
@@ -234,16 +233,11 @@ export default async function FeesPage({
         title="Fees & payments"
         description="Raise invoices, record full or partial payments and keep every receipt auditable."
         actions={
-          <>
-            <Link href="/app/students/export" className="btn btn-secondary">
-              <Download className="size-3.5" /> Export students
+          canWrite ? (
+            <Link href="/app/fees/new" className="btn btn-primary">
+              <Plus className="size-4" /> New invoice
             </Link>
-            {canWrite && (
-              <Link href="/app/fees/new" className="btn btn-primary">
-                <Plus className="size-4" /> New invoice
-              </Link>
-            )}
-          </>
+          ) : null
         }
       />
 

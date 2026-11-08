@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import type { StudentStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { authorizeTenantWrite } from "@/lib/rbac";
 import { writeAudit } from "@/lib/audit";
@@ -344,6 +345,13 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
     return { error: "The CSV must include admissionNo, firstName and lastName columns." };
   }
 
+  // FIX-04: Deterministic upfront limit check on parsed data rows before DB queries or writes
+  if (rows.length > 300) {
+    return {
+      error: `This file contains ${rows.length} student records, which exceeds the maximum limit of 300 rows per import. No records were imported. Please split your file into batches of 300 or fewer.`,
+    };
+  }
+
   const [classes, sections, existing, plan] = await Promise.all([
     db.classLevel.findMany({ where: { tenantId: ctx.tenant.id } }),
     db.section.findMany({ where: { tenantId: ctx.tenant.id } }),
@@ -363,6 +371,8 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
     phone: string | null;
     gender: string | null;
     dob: Date | null;
+    address: string | null;
+    status: StudentStatus;
     classId: string | null;
     sectionId: string | null;
     guardianName: string | null;
@@ -374,12 +384,9 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
   const candidates: Candidate[] = [];
   const skipped: string[] = [];
   const seen = new Set<string>();
+  const validStatuses = new Set<StudentStatus>(["ACTIVE", "INACTIVE", "ALUMNI"]);
 
   for (const [i, row] of rows.entries()) {
-    if (candidates.length >= 300) {
-      skipped.push(`Stopped at 300 rows (limit per import).`);
-      break;
-    }
     const admissionNo = col(row, "admissionno");
     const firstName = col(row, "firstname");
     const lastName = col(row, "lastname");
@@ -393,6 +400,19 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
       continue;
     }
     seen.add(key);
+
+    // FIX-02 & FIX-03: Address mapping and strict StudentStatus enum validation
+    const address = col(row, "address") || null;
+    const rawStatus = col(row, "status").trim().toUpperCase();
+    let status: StudentStatus;
+    if (!rawStatus) {
+      status = "ACTIVE";
+    } else if (validStatuses.has(rawStatus as StudentStatus)) {
+      status = rawStatus as StudentStatus;
+    } else {
+      skipped.push(`Row ${i + 2}: invalid status '${rawStatus}'. Allowed statuses are ACTIVE, INACTIVE, ALUMNI.`);
+      continue;
+    }
 
     const className = (col(row, "class") || col(row, "classname")).toLowerCase();
     const sectionName = (col(row, "section") || col(row, "sectionname")).toLowerCase();
@@ -410,6 +430,8 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
       phone: col(row, "phone") || null,
       gender: ["MALE", "FEMALE", "OTHER"].includes(genderRaw) ? genderRaw : null,
       dob,
+      address,
+      status,
       classId: section?.classId ?? cls?.id ?? null,
       sectionId: section?.id ?? null,
       guardianName: col(row, "guardianname") || null,
@@ -449,6 +471,8 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
             phone: c.phone,
             gender: c.gender,
             dob: c.dob,
+            address: c.address,
+            status: c.status,
             classId: c.classId,
             sectionId: c.sectionId,
           },
