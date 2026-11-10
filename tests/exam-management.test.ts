@@ -2461,6 +2461,107 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
       expect(deletedCheck).toBeNull();
     });
 
+    it("2.1. Safeguard 5: Permanent deletion rejected when draft examination has historical ExamResult", async () => {
+      // Create a separate reference exam and enrollment to provide a valid unique foreign key for ExamResult
+      const refExam = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Reference Exam for Result FK",
+          code: `REF-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "DRAFT",
+          startDate: new Date("2026-12-10"),
+          endDate: new Date("2026-12-15"),
+          createdById: memberId,
+        },
+      });
+      createdExamIds.push(refExam.id);
+
+      const refEnrollment = await db.examEnrollment.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: refExam.id,
+          studentId: student2.id,
+          status: "ELIGIBLE",
+        },
+      });
+
+      // 1. Create a DRAFT examination with a historical ExamResult
+      const draftExamWithResult = await db.examination.create({
+        data: {
+          tenantId: tenantA.id,
+          academicYearId: academicYearA.id,
+          gradeScaleId: gradeScaleA.id,
+          targetType: "CLASS_SECTION",
+          classId: classA.id,
+          sectionId: sectionA.id,
+          title: "Draft Exam with Historical Result",
+          code: `DR-RES-${Date.now().toString().slice(-6)}`,
+          examType: "UNIT_TEST",
+          status: "DRAFT",
+          startDate: new Date("2026-12-10"),
+          endDate: new Date("2026-12-15"),
+          createdById: memberId,
+        },
+      });
+      createdExamIds.push(draftExamWithResult.id);
+
+      const historicalResult = await db.examResult.create({
+        data: {
+          tenantId: tenantA.id,
+          examId: draftExamWithResult.id,
+          studentId: student2.id,
+          enrollmentId: refEnrollment.id,
+          totalMaxMarks: 100,
+          totalMarksObtained: 75,
+          percentage: 75,
+          grade: "B",
+          rank: 1,
+          resultStatus: "PASS",
+        },
+      });
+
+      // 2. Ensure enrollment, ExamMark, and revision-event counts are zero
+      const [enrollmentCount, markCount, revisionEventCount, resultCount] = await Promise.all([
+        db.examEnrollment.count({ where: { examId: draftExamWithResult.id, tenantId: tenantA.id } }),
+        db.examMark.count({ where: { examId: draftExamWithResult.id, tenantId: tenantA.id } }),
+        db.examMarksRevisionEvent.count({ where: { examId: draftExamWithResult.id, tenantId: tenantA.id } }),
+        db.examResult.count({ where: { examId: draftExamWithResult.id, tenantId: tenantA.id } }),
+      ]);
+      expect(enrollmentCount).toBe(0);
+      expect(markCount).toBe(0);
+      expect(revisionEventCount).toBe(0);
+      expect(resultCount).toBe(1);
+
+      // 3. Attempt deletion
+      const deleteRes = await deleteExaminationAction(draftExamWithResult.id);
+
+      // 4. Assert deletion is rejected
+      expect(deleteRes.ok).toBe(false);
+      expect(deleteRes.code).toBe("INVALID_TRANSITION");
+      expect(deleteRes.error).toMatch(/historical results \(1\)/i);
+
+      // 5. Assert ExamResult and Examination remain intact
+      const examCheck = await db.examination.findUnique({ where: { id: draftExamWithResult.id } });
+      expect(examCheck).not.toBeNull();
+      expect(examCheck?.id).toBe(draftExamWithResult.id);
+
+      const resultCheck = await db.examResult.findUnique({ where: { id: historicalResult.id } });
+      expect(resultCheck).not.toBeNull();
+      expect(resultCheck?.id).toBe(historicalResult.id);
+
+      // Cleanup historical result and ref entities
+      await db.examResult.delete({ where: { id: historicalResult.id } });
+      await db.examEnrollment.delete({ where: { id: refEnrollment.id } });
+      await db.examination.delete({ where: { id: refExam.id } });
+      await db.examination.delete({ where: { id: draftExamWithResult.id } });
+    });
+
     it("3. Safeguard 4: Completeness engine detects missing, unverified, and malformed marks", async () => {
       // Step A: Move exam to IN_PROGRESS via marks entry
       const enterRes = await enterMarksBulkAction({

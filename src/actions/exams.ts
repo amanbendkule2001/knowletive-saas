@@ -297,7 +297,7 @@ export async function deleteExaminationAction(examId: string): Promise<ActionRes
       return {
         ok: false,
         code: "INVALID_TRANSITION",
-        error: `Operational examinations with enrolled candidates (${enrollmentCount}), marks (${markCount}), or revision events (${revisionEventCount}) cannot be permanently deleted. Use cancellation instead.`,
+        error: `Operational examinations with enrolled candidates (${enrollmentCount}), marks (${markCount}), revision events (${revisionEventCount}), or historical results (${resultCount}) cannot be permanently deleted. Use cancellation instead.`,
       };
     }
 
