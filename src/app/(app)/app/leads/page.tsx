@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { LeadExportButton } from "./lead-export-button";
+import { LeadImportButton } from "./lead-import-button";
 import {
   Calendar,
   CheckCircle2,
@@ -131,6 +133,7 @@ export default async function LeadsPage({
   );
   const totalAll = statusCounts.reduce((sum, c) => sum + c._count._all, 0);
 
+  const canRead = hasTenantPermission(ctx, "tenant.leads.read");
   const canWrite = hasTenantPermission(ctx, "tenant.leads.write");
 
   const columns: Column<LeadRow>[] = [
@@ -218,11 +221,21 @@ export default async function LeadsPage({
         title="Leads & Enquiries"
         description="Track prospective student enquiries, schedule follow-ups, and convert qualified leads into enrolled students."
         actions={
-          canWrite ? (
-            <Link href="/app/leads/new" className="btn btn-primary">
-              <Plus className="size-4" /> New enquiry
-            </Link>
-          ) : null
+          <>
+            {canWrite && <LeadImportButton />}
+            {canRead && (
+              <LeadExportButton
+                status={statusFilter}
+                q={q}
+                total={total}
+              />
+            )}
+            {canWrite && (
+              <Link href="/app/leads/new" className="btn btn-primary">
+                <Plus className="size-4" /> New enquiry
+              </Link>
+            )}
+          </>
         }
       />
 
