@@ -24,19 +24,22 @@ export const PENDING_COOKIE = "kl_pending";
 const SESSION_TTL_DAYS = 7;
 const PENDING_TTL_MINUTES = 10;
 
+let cachedPendingSecret: Uint8Array | null = null;
+
 function getPendingSecret(): Uint8Array {
+  if (cachedPendingSecret) return cachedPendingSecret;
   const secret = process.env.SESSION_SECRET;
-  if (process.env.NODE_ENV === "production") {
+  const isBuildPhase = process.env.NEXT_PHASE === "phase-production-build";
+  if (process.env.NODE_ENV === "production" && !isBuildPhase) {
     if (!secret || secret.length < 32 || secret.includes("dev-only")) {
       throw new Error(
         "FATAL SECURITY VIOLATION: SESSION_SECRET must be configured with at least 32 cryptographically secure characters in production.",
       );
     }
   }
-  return new TextEncoder().encode(secret ?? "dev-only-pending-secret-change-before-production");
+  cachedPendingSecret = new TextEncoder().encode(secret ?? "dev-only-pending-secret-change-before-production");
+  return cachedPendingSecret;
 }
-
-const pendingSecret = getPendingSecret();
 
 export type TenantAccess = {
   tenantId: string;
@@ -201,7 +204,7 @@ export async function createPendingLogin(userId: string, next: string) {
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${PENDING_TTL_MINUTES}m`)
-    .sign(pendingSecret);
+    .sign(getPendingSecret());
 
   const jar = await cookies();
   jar.set(PENDING_COOKIE, token, {
@@ -218,7 +221,7 @@ export async function readPendingLogin(): Promise<{ userId: string; next: string
   const token = jar.get(PENDING_COOKIE)?.value;
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, pendingSecret);
+    const { payload } = await jwtVerify(token, getPendingSecret());
     if (typeof payload.userId !== "string") return null;
     return {
       userId: payload.userId,

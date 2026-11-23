@@ -30,6 +30,7 @@ RUN mkdir -p /app/public
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
+ENV SESSION_SECRET="build-phase-placeholder-secret-at-least-32-chars-long"
 
 # Generate Prisma Client
 RUN npx prisma generate
