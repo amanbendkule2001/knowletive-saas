@@ -16,7 +16,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY prisma ./prisma/
 
-RUN npm ci
+# Install all dependencies (including devDependencies required for Next.js build)
+RUN npm ci --include=dev
 
 # ─────────────────────────────────────────────────────────────
 # 3. Builder
