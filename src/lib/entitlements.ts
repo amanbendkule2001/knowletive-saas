@@ -76,7 +76,11 @@ export async function assertStaffCapacity(ctx: TenantContext) {
   const plan = ctx.tenant.subscription?.plan;
   if (!plan) throw new Error("No active plan. Choose a plan in Billing first.");
   const count = await db.membership.count({
-    where: { tenantId: ctx.tenant.id, status: { not: "SUSPENDED" } },
+    where: {
+      tenantId: ctx.tenant.id,
+      status: { not: "SUSPENDED" },
+      role: { key: { notIn: ["STUDENT", "PARENT"] } },
+    },
   });
   if (count >= plan.maxStaff) {
     throw new Error(
@@ -88,7 +92,13 @@ export async function assertStaffCapacity(ctx: TenantContext) {
 export async function usageSnapshot(tenantId: string) {
   const [students, staff, aiJobs, storage] = await Promise.all([
     db.student.count({ where: { tenantId, status: { not: "ALUMNI" } } }),
-    db.membership.count({ where: { tenantId, status: { not: "SUSPENDED" } } }),
+    db.membership.count({
+      where: {
+        tenantId,
+        status: { not: "SUSPENDED" },
+        role: { key: { notIn: ["STUDENT", "PARENT"] } },
+      },
+    }),
     db.aiJob.count({ where: { tenantId } }),
     Promise.resolve(0), // Storage metering lands with document uploads.
   ]);

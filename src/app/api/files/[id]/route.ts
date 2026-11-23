@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { getSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { objectDownload } from "@/lib/storage";
+import { resolveUserBranchScope } from "@/lib/branch";
 
 export async function GET(
   _request: NextRequest,
@@ -14,7 +15,11 @@ export async function GET(
 
   const fileAsset = await db.fileAsset.findUnique({
     where: { id },
-    include: { student: true },
+    include: {
+      student: {
+        select: { id: true, tenantId: true, branchId: true, userId: true },
+      },
+    },
   });
 
   if (!fileAsset) {
@@ -33,27 +38,92 @@ export async function GET(
 
     if (!isPlatformOwner && !membership) {
       return Response.json(
-        { error: "Access denied. You do not have permission to view this page." },
+        { error: "Access denied. You do not have permission to view this file." },
         { status: 403 },
       );
     }
 
-    // If the file is tied to a student, verify portal guardian/student authorization
-    if (!isPlatformOwner && membership && fileAsset.studentId) {
-      const isStaff = !["PARENT", "STUDENT"].includes(membership.roleName.toUpperCase());
+    if (!isPlatformOwner && membership) {
+      const roleUpper = (membership.roleName || "").toUpperCase();
+      const roleKeyUpper = (membership.roleKey || "").toUpperCase();
+      const isParent = roleUpper === "PARENT" || roleKeyUpper === "PARENT";
+      const isStudent = roleUpper === "STUDENT" || roleKeyUpper === "STUDENT";
+      const isStaff = !isParent && !isStudent;
 
-      if (!isStaff) {
-        // Check if this guardian is linked to the student
-        const linkedGuardian = await db.studentGuardian.findFirst({
-          where: {
-            studentId: fileAsset.studentId,
-            guardian: { userId: user.id, tenantId: fileAsset.tenantId },
-          },
-        });
+      if (fileAsset.studentId && fileAsset.student) {
+        // 1. Student self-access
+        if (isStudent) {
+          if (fileAsset.student.userId !== user.id) {
+            return Response.json(
+              { error: "Access denied. You can only view your own student files." },
+              { status: 403 },
+            );
+          }
+        }
 
-        if (!linkedGuardian) {
+        // 2. Parent / Guardian relationship verification
+        if (isParent) {
+          const linkedGuardian = await db.studentGuardian.findFirst({
+            where: {
+              studentId: fileAsset.studentId,
+              guardian: { userId: user.id, tenantId: fileAsset.tenantId },
+            },
+          });
+
+          if (!linkedGuardian) {
+            return Response.json(
+              { error: "Access denied. You do not have permission to view files for this student." },
+              { status: 403 },
+            );
+          }
+        }
+
+        // 3. Staff branch authorization check
+        if (isStaff && !membership.isOwner && roleKeyUpper !== "INSTITUTE_ADMIN") {
+          const branchScope = await resolveUserBranchScope({
+            user,
+            tenant: { id: fileAsset.tenantId } as any,
+            membership: membership as any,
+            permissions: new Set(membership.permissions || []),
+            isOwnerView: false,
+            subscriptionBlocked: false,
+            branchId: membership.branchId,
+          });
+
+          if (branchScope.isBranchScoped) {
+            const studentBranchId = fileAsset.student.branchId;
+            if (!studentBranchId || !branchScope.allowedBranchIds.includes(studentBranchId)) {
+              return Response.json(
+                { error: "Access denied. You do not have permission to access records for this branch." },
+                { status: 403 },
+              );
+            }
+          }
+        }
+      } else {
+        // General tenant documents without student association
+        // Deny parents and students by default
+        if (isParent || isStudent) {
           return Response.json(
-            { error: "Access denied. You do not have permission to view this page." },
+            { error: "Access denied. You do not have permission to access internal institute documents." },
+            { status: 403 },
+          );
+        }
+
+        // Staff access check for unassociated documents
+        const perms = new Set(membership.permissions || []);
+        const isAuthorizedStaff =
+          membership.isOwner ||
+          roleKeyUpper === "INSTITUTE_ADMIN" ||
+          fileAsset.uploadedById === user.id ||
+          perms.has("tenant.settings.read") ||
+          perms.has("tenant.staff.read") ||
+          perms.has("tenant.reports.read") ||
+          perms.has("tenant.fees.read");
+
+        if (!isAuthorizedStaff) {
+          return Response.json(
+            { error: "Access denied. You do not have authorization to view this document." },
             { status: 403 },
           );
         }

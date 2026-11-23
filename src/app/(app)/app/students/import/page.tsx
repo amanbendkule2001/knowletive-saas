@@ -1,9 +1,8 @@
 import Link from "next/link";
-import { ArrowLeft, Download, FileSpreadsheet, Upload } from "lucide-react";
+import { ArrowLeft, Download } from "lucide-react";
 import { requireTenantWrite } from "@/lib/rbac";
-import { importStudentsAction } from "@/actions/students";
-import { ActionForm } from "@/components/ui/action-form";
 import { Callout, Card, CardHeader, PageHeader } from "@/components/ui/primitives";
+import { StudentImportForm } from "./student-import-form";
 
 export const metadata = { title: "Import students" };
 
@@ -50,29 +49,7 @@ export default async function ImportStudentsPage() {
         <Card>
           <CardHeader title="Upload a CSV" description="UTF-8, up to 2 MB and 300 rows per import." />
           <div className="p-4">
-            <ActionForm
-              action={importStudentsAction}
-              submitLabel="Import students"
-              pendingLabel="Importing…"
-              cancelHref="/app/students"
-            >
-              <label
-                htmlFor="file"
-                className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-[var(--border-strong)] px-4 py-10 text-center transition hover:border-[var(--brand)] hover:bg-[var(--surface-2)]"
-              >
-                <span className="grid size-11 place-items-center rounded-xl bg-[var(--brand-soft)] text-[var(--brand)]">
-                  <FileSpreadsheet className="size-5" />
-                </span>
-                <span className="mt-3 text-sm font-semibold">Choose a .csv file</span>
-                <span className="mt-1 text-xs text-muted">
-                  Export from Excel or Google Sheets with a header row
-                </span>
-                <input id="file" name="file" type="file" accept=".csv,text/csv" className="sr-only" required />
-                <span className="btn btn-secondary btn-sm mt-4">
-                  <Upload className="size-3.5" /> Browse files
-                </span>
-              </label>
-            </ActionForm>
+            <StudentImportForm />
           </div>
         </Card>
 

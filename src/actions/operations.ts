@@ -4,10 +4,13 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { authorizeTenantWrite } from "@/lib/rbac";
+import { hasTenantPermission, type TenantContext } from "@/lib/auth";
+import { resolveUserBranchScope } from "@/lib/branch";
 import { writeAudit } from "@/lib/audit";
 import { hasFeature } from "@/lib/entitlements";
 import { runAiJob } from "@/lib/ai";
 import { AI_FEATURE_MAP } from "@/lib/catalog";
+import { evaluateAiPermission } from "@/lib/ai-permissions";
 import { sendNotification } from "@/lib/notifications";
 import {
   aiSchema,
@@ -206,9 +209,14 @@ export async function createFeeInvoiceAction(_prev: FormState, formData: FormDat
 
   const student = await db.student.findFirst({
     where: { id: d.studentId, tenantId: ctx.tenant.id },
-    select: { id: true, firstName: true, lastName: true },
+    select: { id: true, firstName: true, lastName: true, branchId: true },
   });
   if (!student) return { error: "That student was not found in this institute." };
+
+  const branchScope = await resolveUserBranchScope(ctx);
+  if (branchScope.isBranchScoped && student.branchId && !branchScope.allowedBranchIds.includes(student.branchId)) {
+    return { error: "Access denied. You cannot create invoices for a student in another branch." };
+  }
 
   const amount = Math.round(d.amount * 100);
   const number = await nextFeeNumber(ctx.tenant.id, ctx.tenant.slug);
@@ -219,6 +227,7 @@ export async function createFeeInvoiceAction(_prev: FormState, formData: FormDat
     data: {
       tenantId: ctx.tenant.id,
       studentId: student.id,
+      branchId: student.branchId ?? branchScope.assignedBranchId ?? null,
       number,
       title: d.title,
       amount,
@@ -244,55 +253,195 @@ export async function createFeeInvoiceAction(_prev: FormState, formData: FormDat
 }
 
 export async function recordFeePaymentAction(_prev: FormState, formData: FormData): Promise<FormState> {
-  const auth = await authorizeTenantWrite("tenant.fees.write", "update");
-  if (!auth.ok) return { error: auth.error };
-  const ctx = auth.ctx;
+  const writeAuth = await authorizeTenantWrite("tenant.fees.write", "update");
+  let ctx: TenantContext;
+  if (writeAuth.ok) {
+    ctx = writeAuth.ctx;
+  } else {
+    // Check if user has offline fee collection permission (e.g. Front Desk)
+    const offlineAuth = await authorizeTenantWrite("tenant.fees.collect_offline", "update");
+    if (!offlineAuth.ok) return { error: writeAuth.error };
+    ctx = offlineAuth.ctx;
+  }
+
   const parsed = feePaymentSchema.safeParse({
     invoiceId: formData.get("invoiceId"),
     amount: formData.get("amount"),
     method: formData.get("method"),
-    reference: formData.get("reference"),
+    reference: formData.get("reference") ?? "",
   });
   if (!parsed.success) return fieldErrors(parsed.error);
 
   const d = parsed.data;
-  const invoice = await db.feeInvoice.findFirst({
-    where: { id: d.invoiceId, tenantId: ctx.tenant.id },
-    include: { student: { select: { firstName: true, lastName: true } } },
-  });
-  if (!invoice) return { error: "Fee invoice not found." };
-  if (invoice.status === "PAID") return { error: "This invoice is already fully paid." };
-  if (invoice.status === "WAIVED") return { error: "This invoice has been waived." };
-
   const amount = Math.round(d.amount * 100);
-  const outstanding = invoice.amount - invoice.paidAmount;
-  if (amount > outstanding) {
-    return { error: `The outstanding balance is ₹${(outstanding / 100).toLocaleString("en-IN")}.` };
+
+  // If user only has collect_offline, restrict method strictly to CASH or CHEQUE
+  const hasFullWrite = hasTenantPermission(ctx, "tenant.fees.write");
+  if (!hasFullWrite && d.method !== "CASH" && d.method !== "CHEQUE") {
+    return { error: "Front desk offline fee collection is restricted to Cash and Cheque payments." };
   }
 
-  const paidAmount = invoice.paidAmount + amount;
-  const fullyPaid = paidAmount >= invoice.amount;
+  const branchScope = await resolveUserBranchScope(ctx);
 
-  await db.$transaction([
-    db.feePayment.create({
+  const result = await db.$transaction(async (tx) => {
+    // 1. Acquire exclusive PostgreSQL row-level lock on the target FeeInvoice
+    const rows = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id FROM "FeeInvoice"
+      WHERE id = ${d.invoiceId} AND "tenantId" = ${ctx.tenant.id}
+      FOR UPDATE
+    `;
+    if (!rows || rows.length === 0) {
+      return { error: "Fee invoice not found." };
+    }
+
+    // 2. Re-read invoice inside transaction under the lock
+    const invoice = await tx.feeInvoice.findFirst({
+      where: { id: d.invoiceId, tenantId: ctx.tenant.id },
+      include: { student: { select: { firstName: true, lastName: true, branchId: true } } },
+    });
+    if (!invoice) return { error: "Fee invoice not found." };
+    if (invoice.status === "PAID") return { error: "This invoice is already fully paid." };
+    if (invoice.status === "WAIVED") return { error: "This invoice has been waived." };
+
+    // Enforce branch isolation
+    const invoiceBranchId = invoice.branchId || invoice.student.branchId;
+    if (branchScope.isBranchScoped && invoiceBranchId && !branchScope.allowedBranchIds.includes(invoiceBranchId)) {
+      return { error: "Access denied. You cannot collect fees for another branch." };
+    }
+
+    // 3. Re-calculate current outstanding balance from fresh locked database state
+    const outstanding = invoice.amount - invoice.paidAmount;
+    if (outstanding <= 0) {
+      return { error: "This invoice has no outstanding balance." };
+    }
+    if (amount > outstanding) {
+      return { error: `The outstanding balance is ₹${(outstanding / 100).toLocaleString("en-IN")}.` };
+    }
+
+    const paidAmount = invoice.paidAmount + amount;
+    const fullyPaid = paidAmount >= invoice.amount;
+    const effectiveBranchId = invoiceBranchId || branchScope.assignedBranchId || null;
+
+    // 4. Create FeePayment record inside tx
+    await tx.feePayment.create({
       data: {
         tenantId: ctx.tenant.id,
         feeInvoiceId: invoice.id,
+        branchId: effectiveBranchId,
         amount,
         method: d.method,
         reference: d.reference || null,
         collectedById: ctx.user.id,
       },
-    }),
-    db.feeInvoice.update({
+    });
+
+    // Issue Layer 1 Immutable PaymentReceipt for offline collection
+    const receiptCount = await tx.paymentReceipt.count({ where: { tenantId: ctx.tenant.id } });
+    const receiptNumber = `RCPT-OFFLINE-${(receiptCount + 1).toString().padStart(6, "0")}`;
+
+    const receipt = await tx.paymentReceipt.create({
+      data: {
+        tenantId: ctx.tenant.id,
+        studentId: invoice.studentId,
+        branchId: effectiveBranchId,
+        receiptNumber,
+        amount,
+        currency: "INR",
+        method: d.method,
+        reference: d.reference || null,
+        provider: "cashier",
+        payerName: `${invoice.student.firstName} ${invoice.student.lastName}`,
+        createdById: ctx.user.id,
+      },
+    });
+
+    // Create 1:1 PaymentReceiptBalance
+    await tx.paymentReceiptBalance.create({
+      data: {
+        tenantId: ctx.tenant.id,
+        receiptId: receipt.id,
+        allocatedAmount: amount,
+        unappliedAmount: 0,
+        status: "FULLY_ALLOCATED",
+      },
+    });
+
+    // Create PaymentAllocation linking receipt to fee invoice
+    await tx.paymentAllocation.create({
+      data: {
+        tenantId: ctx.tenant.id,
+        receiptId: receipt.id,
+        studentId: invoice.studentId,
+        feeInvoiceId: invoice.id,
+        amount,
+      },
+    });
+
+    // 5. Update FeeInvoice with new balance and status inside tx
+    await tx.feeInvoice.update({
       where: { id: invoice.id },
       data: {
         paidAmount,
         status: fullyPaid ? "PAID" : "PARTIAL",
         paidAt: fullyPaid ? new Date() : null,
       },
-    }),
-  ]);
+    });
+
+    // 6. Record offline ledger entry (OFFLINE_RECORD) for audit without inflating online payable balance
+    if (effectiveBranchId) {
+      const lastEntry = await tx.branchLedgerEntry.findFirst({
+        where: { tenantId: ctx.tenant.id, branchId: effectiveBranchId },
+        orderBy: { postedAt: "desc" },
+        select: { balanceAfter: true },
+      });
+      const onlineBalance = lastEntry?.balanceAfter ?? 0;
+      await tx.branchLedgerEntry.create({
+        data: {
+          tenantId: ctx.tenant.id,
+          branchId: effectiveBranchId,
+          entryType: "CREDIT_SETTLEMENT",
+          channel: "OFFLINE_RECORD",
+          amount,
+          balanceAfter: onlineBalance, // OFFLINE cash/cheque does NOT increase online payable balance
+          referenceType: "FEE_PAYMENT",
+          referenceId: invoice.id,
+          description: `Offline ${d.method} collection of ₹${(amount / 100).toLocaleString("en-IN")}`,
+          createdById: ctx.user.id,
+        },
+      });
+    }
+
+    // 6. Invalidate stale payment links:
+    // If invoice is fully paid, cancel all remaining OPEN links for this invoice.
+    // If partial payment, cancel any open links whose amount exceeds remaining outstanding balance.
+    const remainingOutstanding = invoice.amount - paidAmount;
+    if (fullyPaid) {
+      await tx.feePaymentLink.updateMany({
+        where: { feeInvoiceId: invoice.id, status: "OPEN" },
+        data: { status: "CANCELED" },
+      });
+    } else if (remainingOutstanding > 0) {
+      await tx.feePaymentLink.updateMany({
+        where: {
+          feeInvoiceId: invoice.id,
+          status: "OPEN",
+          amount: { gt: remainingOutstanding },
+        },
+        data: { status: "CANCELED" },
+      });
+    }
+
+    return {
+      success: `Payment of ₹${(amount / 100).toLocaleString("en-IN")} recorded for ${invoice.student.firstName} ${invoice.student.lastName}.`,
+      invoiceNumber: invoice.number,
+      invoiceId: invoice.id,
+      amount,
+    };
+  });
+
+  if ("error" in result) {
+    return { error: result.error };
+  }
 
   await writeAudit({
     tenantId: ctx.tenant.id,
@@ -300,15 +449,15 @@ export async function recordFeePaymentAction(_prev: FormState, formData: FormDat
     actorName: ctx.user.name,
     action: "fee.payment.record",
     entity: "FeeInvoice",
-    entityId: invoice.id,
-    meta: { amount, method: d.method, number: invoice.number },
+    entityId: result.invoiceId,
+    meta: { amount: result.amount, method: d.method, number: result.invoiceNumber },
   });
 
   revalidatePath("/app/fees");
-  revalidatePath(`/app/fees/${invoice.id}`);
+  revalidatePath(`/app/fees/${result.invoiceId}`);
   revalidatePath("/app");
   return {
-    success: `Payment of ₹${(amount / 100).toLocaleString("en-IN")} recorded for ${invoice.student.firstName} ${invoice.student.lastName}.`,
+    success: result.success,
   };
 }
 
@@ -318,12 +467,34 @@ export async function waiveFeeInvoiceAction(formData: FormData) {
   const ctx = auth.ctx;
   const invoiceId = String(formData.get("invoiceId") ?? "");
   if (!invoiceId) return;
-  const invoice = await db.feeInvoice.findFirst({
-    where: { id: invoiceId, tenantId: ctx.tenant.id },
-  });
-  if (!invoice || invoice.status === "PAID") return;
 
-  await db.feeInvoice.update({ where: { id: invoiceId }, data: { status: "WAIVED" } });
+  const result = await db.$transaction(async (tx) => {
+    // 1. Acquire exclusive PostgreSQL row-level lock on FeeInvoice
+    const rows = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id FROM "FeeInvoice"
+      WHERE id = ${invoiceId} AND "tenantId" = ${ctx.tenant.id}
+      FOR UPDATE
+    `;
+    if (!rows || rows.length === 0) return null;
+
+    const invoice = await tx.feeInvoice.findFirst({
+      where: { id: invoiceId, tenantId: ctx.tenant.id },
+    });
+    if (!invoice || invoice.status === "PAID") return null;
+
+    await tx.feeInvoice.update({ where: { id: invoiceId }, data: { status: "WAIVED" } });
+
+    // 2. Invalidate any open payment links for the waived invoice
+    await tx.feePaymentLink.updateMany({
+      where: { feeInvoiceId: invoiceId, status: "OPEN" },
+      data: { status: "CANCELED" },
+    });
+
+    return invoice;
+  });
+
+  if (!result) return;
+
   await writeAudit({
     tenantId: ctx.tenant.id,
     actorId: ctx.user.id,
@@ -331,7 +502,7 @@ export async function waiveFeeInvoiceAction(formData: FormData) {
     action: "fee.invoice.waive",
     entity: "FeeInvoice",
     entityId: invoiceId,
-    meta: { number: invoice.number, amount: invoice.amount },
+    meta: { number: result.number, amount: result.amount },
   });
   revalidatePath("/app/fees");
   revalidatePath(`/app/fees/${invoiceId}`);
@@ -457,6 +628,11 @@ export async function runAiAction(_prev: FormState, formData: FormData): Promise
   const auth = await authorizeTenantWrite("tenant.ai.use", "general");
   if (!auth.ok) return { error: auth.error };
   const ctx = auth.ctx;
+
+  // Centralized AI permission evaluation: Verified Owner by default, others explicit grant
+  const aiAuth = evaluateAiPermission(ctx, "tenant.ai.use");
+  if (!aiAuth.ok) return { error: aiAuth.error };
+
   const plan = ctx.tenant.subscription?.plan;
   if (!plan || !hasFeature(plan, "ai")) {
     return { error: "AI Studio is not included in your current plan. Upgrade in Billing to use it." };
@@ -546,6 +722,21 @@ export async function submitPaymentProofAction(_prev: FormState, formData: FormD
 
   if (!link) return { error: "Payment link not found or expired." };
   if (link.status === "PAID") return { error: "This invoice has already been settled and verified." };
+  if (link.status === "CANCELED") return { error: "This payment link has been canceled." };
+  if (link.feeInvoice.status === "PAID" || link.feeInvoice.status === "WAIVED") {
+    return { error: "This invoice has already been settled or waived." };
+  }
+
+  const isExpired = link.status === "EXPIRED" || link.expiresAt < new Date();
+  if (isExpired) {
+    if (link.status === "OPEN") {
+      await db.feePaymentLink.update({
+        where: { id: link.id },
+        data: { status: "EXPIRED" },
+      });
+    }
+    return { error: "This payment link has expired. Please contact the school to issue a new payment link." };
+  }
 
   await db.feePaymentLink.update({
     where: { id: link.id },
@@ -599,14 +790,32 @@ export async function verifyFeePaymentLinkAction(formData: FormData) {
       },
     },
   });
-  if (!link || link.status === "PAID") return;
+  if (!link || link.status === "PAID" || link.status === "CANCELED") return;
+
+  const isExpired = link.status === "EXPIRED" || link.expiresAt < new Date();
+  const isTimelySubmission = link.submittedAt != null && link.submittedAt <= link.expiresAt;
+  if (isExpired && !isTimelySubmission) {
+    if (link.status === "OPEN") {
+      await db.feePaymentLink.update({
+        where: { id: link.id },
+        data: { status: "EXPIRED" },
+      });
+    }
+    return;
+  }
+
+  if (link.feeInvoice.status === "PAID" || link.feeInvoice.status === "WAIVED") {
+    return;
+  }
 
   const { settleFeePaymentLink } = await import("@/lib/payments");
-  await settleFeePaymentLink({
+  const settled = await settleFeePaymentLink({
     provider: "manual",
     referenceId: link.id,
     amountPaid: link.amount,
   });
+
+  if (!settled) return;
 
   await writeAudit({
     tenantId: ctx.tenant.id,

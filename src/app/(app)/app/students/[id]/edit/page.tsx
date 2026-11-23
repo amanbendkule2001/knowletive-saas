@@ -14,12 +14,17 @@ export default async function EditStudentPage({ params }: { params: Promise<{ id
   const ctx = await requireTenantWrite("tenant.students.write");
   const { id } = await params;
 
-  const [student, classes] = await Promise.all([
+  const [student, classes, branches] = await Promise.all([
     db.student.findFirst({ where: { id, tenantId: ctx.tenant.id } }),
     db.classLevel.findMany({
       where: { tenantId: ctx.tenant.id },
       include: { sections: { orderBy: { name: "asc" } } },
       orderBy: { order: "asc" },
+    }),
+    db.branch.findMany({
+      where: { tenantId: ctx.tenant.id, isActive: true },
+      select: { id: true, name: true, code: true, branchType: true },
+      orderBy: [{ branchType: "asc" }, { name: "asc" }],
     }),
   ]);
   if (!student) notFound();
@@ -49,7 +54,7 @@ export default async function EditStudentPage({ params }: { params: Promise<{ id
             cancelHref={`/app/students/${student.id}`}
           >
             <input type="hidden" name="studentId" value={student.id} />
-            <StudentFields classes={classes} student={student} mode="edit" />
+            <StudentFields classes={classes} branches={branches} student={student} mode="edit" />
           </ActionForm>
         </div>
       </Card>

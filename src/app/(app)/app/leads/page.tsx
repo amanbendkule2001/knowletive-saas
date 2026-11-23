@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { LeadExportButton } from "./lead-export-button";
+import { LeadImportButton } from "./lead-import-button";
 import {
   Calendar,
   CheckCircle2,
@@ -25,6 +27,7 @@ import {
   Tone,
 } from "@/components/ui/primitives";
 import { DataTable, type Column } from "@/components/ui/data-table";
+import { resolveUserBranchScope } from "@/lib/branch";
 import { date, num } from "@/lib/format";
 import type { Prisma, LeadStatus } from "@prisma/client";
 
@@ -79,8 +82,14 @@ export default async function LeadsPage({
   const page = Math.max(1, Number(sp.page ?? "1") || 1);
   const tenantId = ctx.tenant.id;
 
+  const branchScope = await resolveUserBranchScope(ctx);
+  const branchFilter: Prisma.LeadWhereInput = branchScope.isBranchScoped
+    ? { branchId: { in: branchScope.allowedBranchIds } }
+    : {};
+
   const where: Prisma.LeadWhereInput = {
     tenantId,
+    ...branchFilter,
     ...(statusFilter ? { status: statusFilter } : {}),
     ...(q
       ? {
@@ -110,12 +119,13 @@ export default async function LeadsPage({
     db.lead.count({ where }),
     db.lead.groupBy({
       by: ["status"],
-      where: { tenantId },
+      where: { tenantId, ...branchFilter },
       _count: { _all: true },
     }),
     db.lead.findMany({
       where: {
         tenantId,
+        ...branchFilter,
         status: { in: ["NEW", "CONTACTED", "FOLLOW_UP", "INTERESTED"] },
         nextFollowUp: { not: null },
       },
@@ -131,6 +141,7 @@ export default async function LeadsPage({
   );
   const totalAll = statusCounts.reduce((sum, c) => sum + c._count._all, 0);
 
+  const canRead = hasTenantPermission(ctx, "tenant.leads.read");
   const canWrite = hasTenantPermission(ctx, "tenant.leads.write");
 
   const columns: Column<LeadRow>[] = [
@@ -218,11 +229,21 @@ export default async function LeadsPage({
         title="Leads & Enquiries"
         description="Track prospective student enquiries, schedule follow-ups, and convert qualified leads into enrolled students."
         actions={
-          canWrite ? (
-            <Link href="/app/leads/new" className="btn btn-primary">
-              <Plus className="size-4" /> New enquiry
-            </Link>
-          ) : null
+          <>
+            {canWrite && <LeadImportButton />}
+            {canRead && (
+              <LeadExportButton
+                status={statusFilter}
+                q={q}
+                total={total}
+              />
+            )}
+            {canWrite && (
+              <Link href="/app/leads/new" className="btn btn-primary">
+                <Plus className="size-4" /> New enquiry
+              </Link>
+            )}
+          </>
         }
       />
 

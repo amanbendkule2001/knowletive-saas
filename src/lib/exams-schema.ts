@@ -190,6 +190,7 @@ export const updateEnrollmentStatusSchema = z.object({
   enrollmentId: z.string().min(1),
   status: z.enum(EXAM_ENROLLMENT_STATUSES),
   remarks: z.string().nullish().transform((v) => v || null),
+  overwriteExistingMarks: z.boolean().optional(),
 });
 
 export const markEntryItemSchema = z
@@ -199,9 +200,19 @@ export const markEntryItemSchema = z
     isAbsent: z.boolean().default(false),
     isExempted: z.boolean().default(false),
     feedback: z.string().nullish().transform((v) => v || null),
+    expectedVersion: z
+      .number()
+      .int("expectedVersion must be an integer")
+      .min(0, "expectedVersion must be non-negative (0 for uninitialized marks, >= 1 for existing marks)"),
   })
   .superRefine((data, ctx) => {
-    if (data.isAbsent || data.isExempted) {
+    if (data.isAbsent && data.isExempted) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Candidate cannot be marked both absent and exempted",
+        path: ["isExempted"],
+      });
+    } else if (data.isAbsent || data.isExempted) {
       if (data.marksObtained !== null && data.marksObtained !== undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -291,5 +302,27 @@ export const correctPublishedMarkSchema = z.object({
     .trim()
     .min(10, "A detailed justification (minimum 10 characters) is required for published result correction")
     .max(500),
+});
+
+export const transitionExamStatusSchema = z.object({
+  examId: z.string().min(1, "Exam ID is required"),
+  requestedStatus: z.enum(EXAM_STATUSES),
+  reason: z.string().trim().max(500).optional(),
+  expectedCurrentStatus: z.enum(EXAM_STATUSES).optional(),
+});
+
+export const reopenEvaluatedExamSchema = z.object({
+  examId: z.string().min(1, "Exam ID is required"),
+  reason: z.string().trim().min(10, "Justification of at least 10 characters required to reopen evaluation").max(500),
+});
+
+export const cancelExaminationSchema = z.object({
+  examId: z.string().min(1, "Exam ID is required"),
+  reason: z.string().trim().min(10, "Cancellation justification of at least 10 characters is required").max(500),
+});
+
+export const archiveExaminationSchema = z.object({
+  examId: z.string().min(1, "Exam ID is required"),
+  reason: z.string().trim().max(500).optional(),
 });
 

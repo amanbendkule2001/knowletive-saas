@@ -5,6 +5,7 @@ import { requireTenantPermission } from "@/lib/rbac";
 import { hasTenantPermission } from "@/lib/auth";
 import { Card, PageHeader } from "@/components/ui/primitives";
 import { CreateGradeScaleModal, DeleteGradeScaleButton } from "./grading-client-bits";
+import { getOrProvisionGradeScales } from "@/lib/grade-scales";
 
 export const metadata = { title: "Grading Systems & Scales" };
 
@@ -12,7 +13,7 @@ export default async function GradingPage() {
   const ctx = await requireTenantPermission("tenant.exams.manage_grading");
   const canManage = hasTenantPermission(ctx, "tenant.exams.manage_grading");
 
-  const scales = await db.gradeScale.findMany({
+  let scales = await db.gradeScale.findMany({
     where: { tenantId: ctx.tenant.id },
     include: {
       bands: {
@@ -24,6 +25,22 @@ export default async function GradingPage() {
     },
     orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
   });
+
+  if (scales.length === 0) {
+    await getOrProvisionGradeScales(ctx.tenant.id);
+    scales = await db.gradeScale.findMany({
+      where: { tenantId: ctx.tenant.id },
+      include: {
+        bands: {
+          orderBy: { minPercentage: "desc" },
+        },
+        _count: {
+          select: { examinations: true },
+        },
+      },
+      orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+    });
+  }
 
   return (
     <div className="space-y-6">

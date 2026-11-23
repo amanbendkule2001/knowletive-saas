@@ -1,22 +1,14 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRight, Check, Lock, ShieldCheck, Sparkles } from "lucide-react";
+import { Check, ShieldCheck, Sparkles } from "lucide-react";
 import { getSession } from "@/lib/auth";
 import { STAFF_ROLE_KEYS } from "@/lib/catalog";
-import { loginAction } from "@/actions/auth";
-import { ActionForm } from "@/components/ui/action-form";
-import { Field } from "@/components/ui/form-field";
 import { Logo, LogoMark } from "@/components/ui/logo";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { LoginFormClient } from "./login-form-client";
+import { DEMO_ACCOUNTS } from "@/lib/demo-accounts";
 
 export const metadata = { title: "Sign in" };
-
-const demoAccounts = [
-  { label: "Platform owner", email: "owner@knowletive.com", hint: "Full control of institutes, plans, billing" },
-  { label: "Platform support", email: "support@knowletive.com", hint: "Read-only platform access" },
-  { label: "Institute admin", email: "admin@sunrise.test", hint: "Sunrise Public School workspace" },
-  { label: "Teacher", email: "teacher@sunrise.test", hint: "Limited classroom permissions" },
-];
 
 export default async function LoginPage({
   searchParams,
@@ -39,7 +31,9 @@ export default async function LoginPage({
   }
 
   const { email } = await searchParams;
-  const preset = demoAccounts.find((a) => a.email === email)?.email ?? "owner@knowletive.com";
+  const preset =
+    DEMO_ACCOUNTS.find((a) => a.email.toLowerCase() === email?.toLowerCase())?.email ??
+    (email ?? "owner@knowletive.com");
 
   return (
     <div className="grid min-h-dvh lg:grid-cols-[1.05fr_0.95fr]">
@@ -96,8 +90,8 @@ export default async function LoginPage({
           </div>
         </div>
 
-        <div className="flex flex-1 items-center justify-center px-4 pb-10 sm:px-8">
-          <div className="w-full max-w-[26rem]">
+        <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-8">
+          <div className="w-full max-w-[28rem] sm:max-w-xl xl:max-w-2xl transition-all duration-200">
             <div className="mb-6">
               <h2 className="text-2xl font-semibold tracking-tight">Welcome back</h2>
               <p className="mt-1 text-sm text-muted">
@@ -105,66 +99,9 @@ export default async function LoginPage({
               </p>
             </div>
 
-            <div className="card p-5 sm:p-6">
-              <ActionForm action={loginAction} submitLabel="Sign in" pendingLabel="Signing in…" submitClassName="w-full">
-                <Field label="Work email" htmlFor="email" required>
-                  <input
-                    id="email"
-                    name="email"
-                    type="email"
-                    autoComplete="email"
-                    inputMode="email"
-                    required
-                    defaultValue={preset}
-                    className="input"
-                    placeholder="you@institute.edu"
-                  />
-                </Field>
-                <Field label="Password" htmlFor="password" required>
-                  <input
-                    id="password"
-                    name="password"
-                    type="password"
-                    autoComplete="current-password"
-                    required
-                    defaultValue="Admin@123"
-                    className="input"
-                    placeholder="••••••••"
-                  />
-                </Field>
-                <div className="flex items-center justify-between text-[11px] text-muted">
-                  <span className="flex items-center gap-1.5">
-                    <Lock className="size-3" /> Secured with httpOnly session cookies
-                  </span>
-                  <a href="mailto:support@knowletive.com" className="link">
-                    Need help?
-                  </a>
-                </div>
-              </ActionForm>
-            </div>
+            <LoginFormClient initialEmail={preset} />
 
-            <div className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3.5">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted">
-                Demo accounts · password Admin@123
-              </p>
-              <div className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
-                {demoAccounts.map((a) => (
-                  <Link
-                    key={a.email}
-                    href={`/login?email=${encodeURIComponent(a.email)}`}
-                    className="group rounded-lg border border-transparent px-2.5 py-2 transition hover:border-[var(--border)] hover:bg-[var(--surface-2)]"
-                  >
-                    <p className="flex items-center justify-between gap-1 text-[12px] font-medium">
-                      {a.label}
-                      <ArrowRight className="size-3 opacity-0 transition group-hover:opacity-100" />
-                    </p>
-                    <p className="mt-0.5 truncate text-[10px] text-muted">{a.email}</p>
-                  </Link>
-                ))}
-              </div>
-            </div>
-
-            <p className="mt-5 text-center text-[11px] text-muted">
+            <p className="mt-6 text-center text-[11px] text-muted">
               New institute?{" "}
               <a href="mailto:support@knowletive.com" className="link">
                 Talk to the platform team

@@ -30,11 +30,13 @@ export const platformNav: NavItem[] = [
   { href: "/platform/institutes", label: "Institutes", icon: "building", permission: "platform.institutes.read", section: "Platform" },
   { href: "/platform/plans", label: "Plans & features", icon: "layers", permission: "platform.plans.read", section: "Platform" },
   { href: "/platform/subscriptions", label: "Subscriptions", icon: "card", permission: "platform.subscriptions.read", section: "Revenue" },
+  { href: "/platform/finance", label: "Fee Gateway & Payouts", icon: "wallet", permission: "platform.overview.read", section: "Revenue" },
   { href: "/platform/ai", label: "AI usage", icon: "sparkles", permission: "platform.ai.read", section: "Revenue" },
   { href: "/platform/roles", label: "Platform roles", icon: "shield", permission: "platform.roles.read", section: "Governance" },
   { href: "/platform/team", label: "Platform team", icon: "users", permission: "platform.users.read", section: "Governance" },
   { href: "/platform/audit", label: "Audit log", icon: "scroll", permission: "platform.audit.read", section: "Governance" },
   { href: "/platform/settings", label: "Settings", icon: "settings", permission: "platform.settings.manage", section: "Governance" },
+  { href: "/platform/settings/ai", label: "AI Provider", icon: "sparkles", permission: "platform.settings.manage", section: "Governance" },
 ];
 
 export const appNav: NavItem[] = [
@@ -53,5 +55,6 @@ export const appNav: NavItem[] = [
   { href: "/app/ai", label: "AI Studio", icon: "sparkles", permission: "tenant.ai.use", section: "Intelligence" },
   { href: "/app/billing", label: "Subscription", icon: "card", permission: "tenant.billing.read", section: "Administration" },
   { href: "/app/roles", label: "Roles & permissions", icon: "shield", permission: "tenant.roles.read", section: "Administration" },
+  { href: "/app/branches", label: "Branches", icon: "building", permission: "tenant.settings.read", section: "Administration" },
   { href: "/app/settings", label: "Settings", icon: "settings", permission: "tenant.settings.read", section: "Administration" },
 ];

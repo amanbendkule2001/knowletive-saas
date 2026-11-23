@@ -116,9 +116,14 @@ export default async function PlatformOverview() {
         title="Good to see you again"
         description="Every institute, subscription and AI credit in one view."
         actions={
-          <Link href="/platform/institutes/new" className="btn btn-primary">
-            <Plus className="size-4" /> New institute
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href="/platform/settings/ai" className="btn btn-secondary">
+              <Sparkles className="size-4 text-amber-500" /> AI Provider
+            </Link>
+            <Link href="/platform/institutes/new" className="btn btn-primary">
+              <Plus className="size-4" /> New institute
+            </Link>
+          </div>
         }
       />
 

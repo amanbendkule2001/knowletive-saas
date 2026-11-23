@@ -12,6 +12,7 @@ import {
 import { db } from "@/lib/db";
 import { requireTenant } from "@/lib/rbac";
 import { hasTenantPermission } from "@/lib/auth";
+import { evaluateAiPermission } from "@/lib/ai-permissions";
 import { hasFeature } from "@/lib/entitlements";
 import { getAiUsage } from "@/lib/billing";
 import { AI_FEATURE_MAP, AI_FEATURES } from "@/lib/catalog";
@@ -39,7 +40,8 @@ export default async function AiStudioPage({
   searchParams: Promise<{ job?: string }>;
 }) {
   const ctx = await requireTenant();
-  const canUse = hasTenantPermission(ctx, "tenant.ai.use");
+  const aiAuth = evaluateAiPermission(ctx, "tenant.ai.use");
+  const canUse = aiAuth.ok;
   const canRead = canUse || hasTenantPermission(ctx, "tenant.ai.read");
   if (!canRead) redirect("/app/forbidden?p=tenant.ai.use");
 

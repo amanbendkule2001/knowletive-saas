@@ -7,7 +7,14 @@ import {
   hasPlatformPermission,
   hasTenantPermission,
 } from "@/lib/auth";
-import { STAFF_ROLE_KEYS } from "@/lib/catalog";
+import { db } from "@/lib/db";
+import {
+  PERMISSIONS,
+  PERMISSION_MAP,
+  STAFF_ROLE_KEYS,
+  AI_PERMISSION_KEYS,
+  AiPermissionKey,
+} from "@/lib/catalog";
 
 /** Guard for pages that any active institute member can read. */
 export async function requireTenant() {
@@ -115,4 +122,129 @@ export async function authorizePlatformWrite(
   }
 
   return { ok: true as const, user };
+}
+
+/**
+ * Validates a list of submitted permission keys against canonical catalog definitions,
+ * target role scope (TENANT vs PLATFORM), and caller authorization for elevated permissions.
+ *
+ * Rules:
+ * 1. At least one permission must be chosen.
+ * 2. Every permission key must exist in the canonical `PERMISSION_MAP`.
+ * 3. Tenant roles accept only tenant-scoped permissions.
+ * 4. Platform roles accept only platform-scoped permissions.
+ * 5. Elevated AI capabilities (`AI_PERMISSION_KEYS`) require Institute Owner or Platform Owner status.
+ * 6. Duplicates are cleanly removed.
+ */
+export function validateRolePermissions(
+  permissions: string[],
+  targetScope: "TENANT" | "PLATFORM",
+  isOwnerOrSuperAdmin: boolean = false,
+): { ok: true; validatedKeys: string[] } | { ok: false; error: string } {
+  const unique = [
+    ...new Set(
+      permissions
+        .map((p) => String(p).trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (unique.length === 0) {
+    return { ok: false, error: "Choose at least one permission for the role." };
+  }
+
+  for (const key of unique) {
+    const canonical = PERMISSION_MAP.get(key);
+    if (!canonical) {
+      return {
+        ok: false,
+        error: `Unknown permission: '${key}'. Only valid permissions from the system catalog may be assigned.`,
+      };
+    }
+
+    if (canonical.scope !== targetScope) {
+      return {
+        ok: false,
+        error: `Invalid permission scope: '${key}' is a ${canonical.scope.toLowerCase()} permission and cannot be assigned to a ${targetScope.toLowerCase()} role.`,
+      };
+    }
+
+    if (
+      targetScope === "TENANT" &&
+      AI_PERMISSION_KEYS.includes(key as AiPermissionKey) &&
+      !isOwnerOrSuperAdmin
+    ) {
+      return {
+        ok: false,
+        error: "Elevated access denied. Only verified Institute Owners can grant AI capabilities to roles.",
+      };
+    }
+  }
+
+  return { ok: true, validatedKeys: unique };
+}
+
+/**
+ * Ensures that all given permission keys exist in the database `Permission` table.
+ * Strictly validates every key against canonical catalog definitions.
+ *
+ * Security & Integrity Guarantees:
+ * 1. Fails closed on any unknown permission key (throws clear validation error).
+ * 2. Only canonical catalog definitions are synchronized — NEVER creates arbitrary or fallback permissions.
+ * 3. Enforces target scope matching if `expectedScope` is provided.
+ * 4. Uses `skipDuplicates` for concurrency-safe insertion.
+ * 5. Preserves existing permission metadata and does not mutate existing records.
+ */
+export async function ensurePermissionsInDb(
+  keys: string[],
+  expectedScope?: "TENANT" | "PLATFORM",
+): Promise<{ inserted: number; existing: number }> {
+  if (!keys.length) return { inserted: 0, existing: 0 };
+
+  // 1. Strict catalog validation - fail closed on any unknown key
+  for (const key of keys) {
+    const canonical = PERMISSION_MAP.get(key);
+    if (!canonical) {
+      throw new Error(
+        `Unknown permission key: '${key}'. Only canonical permissions from the RBAC catalog can be synchronized or assigned.`,
+      );
+    }
+    if (expectedScope && canonical.scope !== expectedScope) {
+      throw new Error(
+        `Invalid permission scope: '${key}' belongs to ${canonical.scope} scope, but target requires ${expectedScope} scope.`,
+      );
+    }
+  }
+
+  // 2. Query existing records from DB
+  const existing = await db.permission.findMany({
+    where: { key: { in: keys } },
+    select: { key: true, scope: true },
+  });
+  const existingSet = new Set(existing.map((p) => p.key));
+  const missingKeys = keys.filter((k) => !existingSet.has(k));
+
+  if (missingKeys.length === 0) {
+    return { inserted: 0, existing: existing.length };
+  }
+
+  // 3. Construct records strictly from canonical PERMISSIONS catalog
+  const toCreate = missingKeys.map((key) => {
+    const canonical = PERMISSION_MAP.get(key)!;
+    return {
+      key: canonical.key,
+      group: canonical.group,
+      label: canonical.label,
+      scope: canonical.scope,
+      description: null,
+    };
+  });
+
+  // 4. Concurrency-safe insertion via skipDuplicates
+  const result = await db.permission.createMany({
+    data: toCreate,
+    skipDuplicates: true,
+  });
+
+  return { inserted: result.count, existing: existing.length };
 }

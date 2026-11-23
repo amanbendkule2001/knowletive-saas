@@ -67,11 +67,24 @@ export default async function NewStaffPage() {
                 <Field label="Role" htmlFor="roleId" required>
                   <select id="roleId" name="roleId" className="select" required>
                     <option value="">Choose a role</option>
-                    {roles.map((role) => (
-                      <option key={role.id} value={role.id}>
-                        {role.name}
-                      </option>
-                    ))}
+                    <optgroup label="Staff & Faculty Roles">
+                      {roles
+                        .filter((r) => !["PARENT", "STUDENT"].includes(r.key))
+                        .map((role) => (
+                          <option key={role.id} value={role.id}>
+                            {role.name}
+                          </option>
+                        ))}
+                    </optgroup>
+                    <optgroup label="Portal Accounts">
+                      {roles
+                        .filter((r) => ["PARENT", "STUDENT"].includes(r.key))
+                        .map((role) => (
+                          <option key={role.id} value={role.id}>
+                            {role.name}
+                          </option>
+                        ))}
+                    </optgroup>
                   </select>
                 </Field>
                 <Field label="Designation" htmlFor="designation">

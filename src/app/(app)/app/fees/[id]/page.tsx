@@ -22,6 +22,10 @@ import {
   waiveFeeInvoiceAction,
   verifyFeePaymentLinkAction,
 } from "@/actions/operations";
+import {
+  allocateStudentCreditToInvoiceAction,
+  reverseCreditAllocationAction,
+} from "@/actions/credit-transfers";
 import { getOrCreateFeePaymentLink } from "@/lib/payments";
 import { ActionForm } from "@/components/ui/action-form";
 import { ConfirmButton } from "@/components/ui/client-bits";
@@ -41,6 +45,7 @@ import {
   statusTone,
 } from "@/components/ui/primitives";
 import { date, money } from "@/lib/format";
+import { resolveUserBranchScope } from "@/lib/branch";
 
 export const metadata = { title: "Fee invoice" };
 
@@ -78,11 +83,45 @@ export default async function FeeInvoicePage({
         },
       },
       payments: { orderBy: { paidAt: "desc" } },
+      paymentAllocations: {
+        include: {
+          receipt: true,
+          creditTransfer: true,
+          reversals: { orderBy: { reversedAt: "desc" } },
+        },
+        orderBy: { allocatedAt: "desc" },
+      },
     },
   });
   if (!invoice) notFound();
 
+  const branchScope = await resolveUserBranchScope(ctx);
+  const invoiceBranchId = invoice.branchId || invoice.student.branchId;
+  if (branchScope.isBranchScoped) {
+    if (!invoiceBranchId || !branchScope.allowedBranchIds.includes(invoiceBranchId)) {
+      notFound();
+    }
+  }
+
+  const creditAccount = await db.studentCreditAccount.findFirst({
+    where: { tenantId: ctx.tenant.id, studentId: invoice.studentId },
+  });
+
   const canWrite = hasTenantPermission(ctx, "tenant.fees.write");
+  const canCollectOffline = hasTenantPermission(ctx, "tenant.fees.collect_offline");
+  const canViewUtr =
+    hasTenantPermission(ctx, "tenant.fees.utr.view") ||
+    ctx.isOwnerView ||
+    Boolean(ctx.membership?.isOwner);
+
+  function maskPaymentReference(ref: string | null | undefined): string {
+    if (!ref) return "—";
+    const str = ref.trim();
+    if (str.length <= 4) return "••••";
+    const suffix = str.slice(-4);
+    return `••••••••${suffix}`;
+  }
+  const canRecordPayment = canWrite || canCollectOffline;
   const outstanding = Math.max(0, invoice.amount - invoice.paidAmount);
   const settled = invoice.status === "PAID" || invoice.status === "WAIVED";
   const overdue = !settled && invoice.dueDate < new Date();
@@ -129,7 +168,7 @@ export default async function FeeInvoicePage({
               <span className="text-xs font-semibold">Payment Proof Submitted</span>
             </div>
             <p className="text-xs text-muted mt-1">
-              UTR / Reference: <strong className="font-mono text-foreground">{paymentLink.utrReference}</strong>
+              UTR / Reference: <strong className="font-mono text-foreground">{canViewUtr ? paymentLink.utrReference : maskPaymentReference(paymentLink.utrReference)}</strong>
               {paymentLink.payerName && ` · Paid by ${paymentLink.payerName}`}
               {paymentLink.payerNotes && ` (${paymentLink.payerNotes})`}
             </p>
@@ -280,7 +319,7 @@ export default async function FeeInvoicePage({
                         <td className="text-muted">{date(payment.paidAt)}</td>
                         <td>{METHOD_LABELS[payment.method] ?? payment.method}</td>
                         <td className="font-mono text-[11px] text-muted">
-                          {payment.reference ?? "—"}
+                          {canViewUtr ? (payment.reference ?? "—") : maskPaymentReference(payment.reference)}
                         </td>
                         <td className="text-right font-medium tabular-nums">
                           {money(payment.amount)}
@@ -292,6 +331,80 @@ export default async function FeeInvoicePage({
               </div>
             )}
           </Card>
+
+          {invoice.paymentAllocations && invoice.paymentAllocations.length > 0 && (
+            <Card>
+              <CardHeader
+                title="Allocated student credit"
+                description={`${invoice.paymentAllocations.length} credit allocation${invoice.paymentAllocations.length === 1 ? "" : "s"} applied`}
+              />
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Provenance / Type</th>
+                      <th>Receipt</th>
+                      <th>Transfer Ref</th>
+                      <th className="text-right">Amount</th>
+                      <th className="text-right">Reversals</th>
+                      {canWrite && <th className="text-right">Action</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invoice.paymentAllocations.map((alloc) => {
+                      const totalReversed = alloc.reversals.reduce((sum, r) => sum + r.amount, 0);
+                      const netActive = alloc.amount - totalReversed;
+                      return (
+                        <tr key={alloc.id}>
+                          <td className="text-muted">{date(alloc.allocatedAt)}</td>
+                          <td>
+                            <Badge tone={alloc.creditTransferId ? "brand" : "neutral"}>
+                              {alloc.creditTransferId ? "Transferred Sibling Credit" : "Direct Student Receipt"}
+                            </Badge>
+                          </td>
+                          <td className="font-mono text-[11px]">
+                            {alloc.receipt?.receiptNumber ?? alloc.receiptId}
+                          </td>
+                          <td className="font-mono text-[11px] text-muted">
+                            {alloc.creditTransfer?.transferNumber ?? "—"}
+                          </td>
+                          <td className="text-right font-medium tabular-nums">
+                            {money(alloc.amount)}
+                          </td>
+                          <td className="text-right tabular-nums text-xs">
+                            {totalReversed > 0 ? (
+                              <span className="text-[var(--danger)]">-{money(totalReversed)}</span>
+                            ) : (
+                              <span className="text-muted">—</span>
+                            )}
+                          </td>
+                          {canWrite && (
+                            <td className="text-right">
+                              {netActive > 0 ? (
+                                <ActionForm
+                                  action={reverseCreditAllocationAction}
+                                  submitLabel="Reverse"
+                                  pendingLabel="Reversing…"
+                                >
+                                  <input type="hidden" name="allocationId" value={alloc.id} />
+                                  <input type="hidden" name="feeInvoiceId" value={invoice.id} />
+                                  <input type="hidden" name="amountInPaise" value={netActive} />
+                                  <input type="hidden" name="reason" value="Accountant manual correction" />
+                                </ActionForm>
+                              ) : (
+                                <span className="text-xs text-muted">Reversed</span>
+                              )}
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
         </div>
 
         <div className="space-y-4">
@@ -372,7 +485,7 @@ export default async function FeeInvoicePage({
                   <CircleDollarSign className="size-3.5" /> Raise another invoice
                 </Link>
               </div>
-            ) : canWrite ? (
+            ) : canRecordPayment ? (
               <div id="record-payment" className="p-4">
                 <ActionForm
                   action={recordFeePaymentAction}
@@ -400,12 +513,12 @@ export default async function FeeInvoicePage({
                       />
                     </Field>
                     <Field label="Method" htmlFor="method" required>
-                      <select id="method" name="method" className="select" defaultValue="UPI">
+                      <select id="method" name="method" className="select" defaultValue={canWrite ? "UPI" : "CASH"}>
                         <option value="CASH">Cash</option>
-                        <option value="UPI">UPI</option>
-                        <option value="CARD">Card</option>
-                        <option value="BANK_TRANSFER">Bank transfer</option>
                         <option value="CHEQUE">Cheque</option>
+                        {canWrite && <option value="UPI">UPI</option>}
+                        {canWrite && <option value="CARD">Card</option>}
+                        {canWrite && <option value="BANK_TRANSFER">Bank transfer</option>}
                       </select>
                     </Field>
                   </FormGrid>
@@ -435,6 +548,57 @@ export default async function FeeInvoicePage({
               </div>
             )}
           </Card>
+
+          {!settled && canWrite && creditAccount && creditAccount.balance > 0 && (
+            <Card>
+              <CardHeader
+                title="Apply student credit"
+                description={`Available credit balance ${money(creditAccount.balance)}`}
+                action={<Badge tone="brand">{money(creditAccount.balance)} available</Badge>}
+              />
+              <div className="p-4">
+                <ActionForm
+                  action={allocateStudentCreditToInvoiceAction}
+                  submitLabel="Apply credit"
+                  pendingLabel="Applying…"
+                >
+                  <input type="hidden" name="feeInvoiceId" value={invoice.id} />
+                  <input type="hidden" name="studentId" value={invoice.studentId} />
+                  <FormGrid>
+                    <Field
+                      label="Amount (₹)"
+                      htmlFor="credit-amount"
+                      required
+                      hint={`Max payable ${money(Math.min(outstanding, creditAccount.balance))}`}
+                    >
+                      <input
+                        id="credit-amount"
+                        name="amount"
+                        type="number"
+                        min={1}
+                        step="0.01"
+                        max={Math.min(outstanding, creditAccount.balance) / 100}
+                        defaultValue={(Math.min(outstanding, creditAccount.balance) / 100).toFixed(2)}
+                        className="input"
+                        required
+                      />
+                    </Field>
+                    <Field label="Drawdown source" htmlFor="sourcePreference">
+                      <select id="sourcePreference" name="sourcePreference" className="select" defaultValue="AUTO_FIFO">
+                        <option value="AUTO_FIFO">Auto FIFO (Earliest receipt first)</option>
+                        <option value="DIRECT_FIRST">Direct receipts first</option>
+                        <option value="TRANSFERRED_FIRST">Transferred sibling credit first</option>
+                      </select>
+                    </Field>
+                  </FormGrid>
+                  <p className="text-[11px] text-muted">
+                    Draws down available credit from student receipts and sibling transfers under strict
+                    double-entry ledger rules without double-spending.
+                  </p>
+                </ActionForm>
+              </div>
+            </Card>
+          )}
         </div>
       </div>
     </div>

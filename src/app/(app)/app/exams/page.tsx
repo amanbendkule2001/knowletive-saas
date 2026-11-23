@@ -5,6 +5,14 @@ import {
   Plus,
   Search,
   Sliders,
+  Calendar,
+  BookOpen,
+  Layers,
+  Users,
+  FileText,
+  CheckCircle2,
+  ArrowRight,
+  X,
 } from "lucide-react";
 import { db } from "@/lib/db";
 import { requireTenantPermission } from "@/lib/rbac";
@@ -16,7 +24,10 @@ import {
   PageHeader,
   StatCard,
   Tone,
+  statusLabel,
 } from "@/components/ui/primitives";
+import { getOrProvisionAcademicYears } from "@/lib/academic-years";
+import { cn } from "@/lib/utils";
 import type { ExamStatus, ExamTargetType, Prisma } from "@prisma/client";
 
 export const metadata = { title: "Examinations & Assessments" };
@@ -38,6 +49,15 @@ function examStatusTone(status: ExamStatus): Tone {
     default:
       return "neutral";
   }
+}
+
+function formatExamDate(dateStr: Date | string) {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 export default async function ExamsPage({
@@ -87,6 +107,7 @@ export default async function ExamsPage({
           class: true,
           section: true,
           batch: true,
+          syllabusTrack: { select: { id: true, name: true, code: true } },
           _count: {
             select: {
               subjects: true,
@@ -97,10 +118,7 @@ export default async function ExamsPage({
         },
         orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
       }),
-      db.academicYear.findMany({
-        where: { tenantId: ctx.tenant.id },
-        orderBy: { startDate: "desc" },
-      }),
+      getOrProvisionAcademicYears(ctx.tenant.id),
       db.examination.count({ where: { tenantId: ctx.tenant.id } }),
       db.examination.count({ where: { tenantId: ctx.tenant.id, status: "SCHEDULED" } }),
       db.examination.count({ where: { tenantId: ctx.tenant.id, status: "EVALUATED" } }),
@@ -108,29 +126,32 @@ export default async function ExamsPage({
       db.examEnrollment.count({ where: { tenantId: ctx.tenant.id } }),
     ]);
 
+  const hasActiveFilters = Boolean(q || statusFilter || targetTypeFilter || academicYearId);
+
   return (
     <div className="space-y-6">
       <PageHeader
+        eyebrow="Assessments"
         title="Examinations & Assessments"
         description="Schedule conventional school and batch-targeted examinations, manage subject evaluation grids, and publish verified report cards."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {canGrading && (
-              <Link href="/app/exams/grading" className="btn btn-secondary text-sm flex items-center gap-1.5">
-                <Sliders className="h-4 w-4" />
-                Grading Scales
+              <Link href="/app/exams/grading" className="btn btn-secondary btn-sm flex items-center gap-1.5 text-xs">
+                <Sliders className="size-3.5" />
+                <span>Grading Scales</span>
               </Link>
             )}
             {canReports && (
-              <Link href="/app/exams/reports" className="btn btn-secondary text-sm flex items-center gap-1.5">
-                <Award className="h-4 w-4" />
-                Analytics & Reports
+              <Link href="/app/exams/reports" className="btn btn-secondary btn-sm flex items-center gap-1.5 text-xs">
+                <Award className="size-3.5" />
+                <span>Analytics & Reports</span>
               </Link>
             )}
             {canWrite && (
-              <Link href="/app/exams/new" className="btn btn-primary text-sm flex items-center gap-1.5">
-                <Plus className="h-4 w-4" />
-                New Examination
+              <Link href="/app/exams/new" className="btn btn-primary btn-sm flex items-center gap-1.5 text-xs">
+                <Plus className="size-3.5" />
+                <span>New Examination</span>
               </Link>
             )}
           </div>
@@ -138,33 +159,63 @@ export default async function ExamsPage({
       />
 
       {/* Metrics Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <StatCard label="Total Examinations" value={totalCount} sub="All academic levels" />
-        <StatCard label="Scheduled" value={scheduledCount} sub="Upcoming assessments" />
-        <StatCard label="Evaluated" value={evaluatedCount} sub="Awaiting publication" />
-        <StatCard label="Published" value={publishedCount} sub="Report cards issued" />
-        <StatCard label="Active Enrollments" value={enrollmentCount} sub="Student candidates" />
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+        <StatCard
+          label="Total Examinations"
+          value={totalCount}
+          sub="All academic levels"
+          icon={<FileText className="size-4" />}
+          tone="brand"
+        />
+        <StatCard
+          label="Scheduled"
+          value={scheduledCount}
+          sub="Upcoming assessments"
+          icon={<Calendar className="size-4" />}
+          tone="warning"
+        />
+        <StatCard
+          label="Evaluated"
+          value={evaluatedCount}
+          sub="Awaiting publication"
+          icon={<CheckCircle2 className="size-4" />}
+          tone="info"
+        />
+        <StatCard
+          label="Published"
+          value={publishedCount}
+          sub="Report cards issued"
+          icon={<Award className="size-4" />}
+          tone="success"
+        />
+        <StatCard
+          label="Active Enrollments"
+          value={enrollmentCount}
+          sub="Student candidates"
+          icon={<Users className="size-4" />}
+          tone="neutral"
+        />
       </div>
 
       {/* Filters Toolbar */}
-      <Card className="p-4 space-y-3">
-        <form className="flex flex-col md:flex-row items-center gap-3">
-          <div className="relative flex-1 w-full">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-400" />
+      <Card className="p-3.5 sm:p-4">
+        <form className="flex flex-col lg:flex-row items-stretch lg:items-center gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted" />
             <input
               type="text"
               name="q"
               defaultValue={q}
-              placeholder="Search by examination title or code..."
-              className="input input-bordered input-sm pl-9 w-full"
+              placeholder="Search by examination title or code…"
+              className="input pl-9 text-xs w-full"
             />
           </div>
 
-          <div className="flex items-center gap-2 w-full md:w-auto">
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap lg:flex-nowrap items-center gap-2">
             <select
               name="status"
               defaultValue={statusFilter || ""}
-              className="select select-bordered select-sm text-xs"
+              className="input text-xs w-full sm:w-auto"
             >
               <option value="">All Statuses</option>
               <option value="DRAFT">Draft</option>
@@ -178,17 +229,17 @@ export default async function ExamsPage({
             <select
               name="targetType"
               defaultValue={targetTypeFilter || ""}
-              className="select select-bordered select-sm text-xs"
+              className="input text-xs w-full sm:w-auto"
             >
               <option value="">All Academic Targets</option>
               <option value="CLASS_SECTION">Class / Section</option>
-              <option value="BATCH">Enterprise Batch</option>
+              <option value="BATCH">Coaching & Cohort Batch</option>
             </select>
 
             <select
               name="academicYearId"
               defaultValue={academicYearId || ""}
-              className="select select-bordered select-sm text-xs"
+              className="input text-xs w-full sm:w-auto"
             >
               <option value="">All Academic Years</option>
               {academicYears.map((ay) => (
@@ -198,105 +249,276 @@ export default async function ExamsPage({
               ))}
             </select>
 
-            <button type="submit" className="btn btn-secondary btn-sm flex items-center gap-1">
-              <Filter className="h-3.5 w-3.5" /> Filter
-            </button>
+            <div className="col-span-2 sm:col-span-1 flex items-center gap-2">
+              <button
+                type="submit"
+                className="btn btn-secondary btn-sm text-xs flex-1 sm:flex-initial flex items-center justify-center gap-1.5"
+              >
+                <Filter className="size-3.5" /> Filter
+              </button>
+              {hasActiveFilters && (
+                <Link
+                  href="/app/exams"
+                  className="btn btn-ghost btn-sm text-xs text-muted hover:text-foreground flex items-center gap-1"
+                  title="Clear all filters"
+                >
+                  <X className="size-3.5" />
+                  <span className="hidden sm:inline">Reset</span>
+                </Link>
+              )}
+            </div>
           </div>
         </form>
       </Card>
 
       {/* Examination Listing Table */}
       {exams.length === 0 ? (
-        <EmptyState
-          title="No examinations found"
-          description="Create your first assessment to schedule exams, assign subjects, and evaluate student marks."
-          action={
-            canWrite ? (
-              <Link href="/app/exams/new" className="btn btn-primary btn-sm flex items-center gap-1.5 mt-2">
-                <Plus className="h-4 w-4" /> Create Examination
-              </Link>
-            ) : undefined
-          }
-        />
+        <Card>
+          <EmptyState
+            title="No examinations found"
+            description={
+              hasActiveFilters
+                ? "No examinations match your selected filter criteria. Try adjusting your query or resetting filters."
+                : "Create your first assessment to schedule exams, assign subjects, and evaluate student marks."
+            }
+            action={
+              hasActiveFilters ? (
+                <Link href="/app/exams" className="btn btn-secondary btn-sm mt-3">
+                  Reset filters
+                </Link>
+              ) : canWrite ? (
+                <Link href="/app/exams/new" className="btn btn-primary btn-sm flex items-center gap-1.5 mt-3">
+                  <Plus className="size-4" /> Create Examination
+                </Link>
+              ) : undefined
+            }
+          />
+        </Card>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800 bg-base-100 shadow-sm">
-          <table className="table w-full text-sm">
-            <thead>
-              <tr className="bg-zinc-100 dark:bg-zinc-800/60 text-zinc-600 dark:text-zinc-400 text-xs">
-                <th>Examination</th>
-                <th>Target Academic Unit</th>
-                <th>Term & Academic Year</th>
-                <th>Assessment Window</th>
-                <th className="text-center">Subjects</th>
-                <th className="text-center">Enrolled</th>
-                <th className="text-center">Status</th>
-                <th className="text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-              {exams.map((exam) => {
-                const targetLabel =
-                  exam.targetType === "BATCH"
-                    ? `Batch: ${exam.batch?.name || "N/A"}`
-                    : `Class: ${exam.class?.name || "N/A"}${exam.section ? ` - Sec ${exam.section.name}` : " (All Sections)"}`;
+        <>
+          {/* Desktop & Tablet Table View */}
+          <Card className="overflow-hidden hidden md:block">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-[var(--border)] bg-[var(--surface-sunken)] text-muted font-medium">
+                    <th className="py-3 px-4">Examination</th>
+                    <th className="py-3 px-4">Target Academic Unit</th>
+                    <th className="py-3 px-4">Term & Academic Year</th>
+                    <th className="py-3 px-4">Assessment Window</th>
+                    <th className="py-3 px-4 text-center">Subjects</th>
+                    <th className="py-3 px-4 text-center">Enrolled</th>
+                    <th className="py-3 px-4 text-center">Status</th>
+                    <th className="py-3 px-4 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border)]">
+                  {exams.map((exam) => {
+                    const isBatch = exam.targetType === "BATCH";
+                    const targetName = isBatch
+                      ? exam.batch?.name || "Batch (Unassigned)"
+                      : exam.class?.name || "Class (Unassigned)";
+                    const targetSub = isBatch
+                      ? exam.batch?.code ? `Code: ${exam.batch.code}` : null
+                      : exam.section ? `Section ${exam.section.name}` : "All Sections";
 
-                return (
-                  <tr key={exam.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors">
-                    <td>
-                      <div className="font-semibold text-zinc-900 dark:text-zinc-100">
-                        <Link href={`/app/exams/${exam.id}`} className="hover:text-indigo-600 dark:hover:text-indigo-400">
-                          {exam.title}
-                        </Link>
-                      </div>
-                      <div className="text-xs text-zinc-400 font-mono">
-                        {exam.code} • {exam.examType.replace("_", " ")}
-                      </div>
-                    </td>
+                    return (
+                      <tr key={exam.id} className="hover:bg-[var(--surface-hover)] transition-colors">
+                        {/* Examination Name & Details */}
+                        <td className="py-3 px-4">
+                          <div className="space-y-1">
+                            <Link
+                              href={`/app/exams/${exam.id}`}
+                              className="font-semibold text-foreground hover:text-[var(--brand)] transition-colors line-clamp-1"
+                            >
+                              {exam.title}
+                            </Link>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-muted font-medium">
+                                {exam.code}
+                              </span>
+                              <span className="text-[11px] text-muted capitalize">
+                                {exam.examType.replace(/_/g, " ").toLowerCase()}
+                              </span>
+                              {exam.syllabusTrack && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-400 font-medium truncate max-w-[160px]" title={exam.syllabusTrack.name}>
+                                  {exam.syllabusTrack.name}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
 
-                    <td>
-                      <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                        {targetLabel}
-                      </span>
-                    </td>
+                        {/* Target Unit */}
+                        <td className="py-3 px-4">
+                          <div className="flex items-start gap-2">
+                            <span
+                              className={cn(
+                                "mt-0.5 grid size-6 place-items-center rounded-md shrink-0 text-xs",
+                                isBatch
+                                  ? "bg-indigo-500/10 text-indigo-400"
+                                  : "bg-emerald-500/10 text-emerald-400",
+                              )}
+                            >
+                              {isBatch ? (
+                                <Layers className="size-3.5" />
+                              ) : (
+                                <BookOpen className="size-3.5" />
+                              )}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="font-medium text-foreground text-xs truncate max-w-[200px]">
+                                {targetName}
+                              </div>
+                              {targetSub && (
+                                <div className="text-[11px] text-muted truncate max-w-[200px]">
+                                  {targetSub}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
 
-                    <td className="text-xs text-zinc-500">
-                      <div>{exam.term || "Regular Term"}</div>
-                      <div className="text-zinc-400">{exam.academicYear.name}</div>
-                    </td>
+                        {/* Term & Academic Year */}
+                        <td className="py-3 px-4">
+                          <div className="font-medium text-foreground">
+                            {exam.term || "Regular Term"}
+                          </div>
+                          <div className="text-[11px] text-muted font-mono">
+                            {exam.academicYear.name}
+                          </div>
+                        </td>
 
-                    <td className="text-xs text-zinc-500">
-                      <div>{new Date(exam.startDate).toLocaleDateString()}</div>
-                      <div className="text-zinc-400">to {new Date(exam.endDate).toLocaleDateString()}</div>
-                    </td>
+                        {/* Assessment Window */}
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-1.5 font-medium text-foreground">
+                            <Calendar className="size-3 text-muted shrink-0" />
+                            <span>{formatExamDate(exam.startDate)}</span>
+                          </div>
+                          <div className="text-[11px] text-muted pl-4.5">
+                            to {formatExamDate(exam.endDate)}
+                          </div>
+                        </td>
 
-                    <td className="text-center font-mono font-medium text-zinc-700 dark:text-zinc-300">
-                      {exam._count.subjects}
-                    </td>
+                        {/* Subjects count */}
+                        <td className="py-3 px-4 text-center">
+                          <div className="inline-flex flex-col items-center">
+                            <span className="font-mono font-semibold text-xs text-foreground">
+                              {exam._count.subjects}
+                            </span>
+                            <span className="text-[10px] text-muted">
+                              {exam._count.subjects === 1 ? "subject" : "subjects"}
+                            </span>
+                          </div>
+                        </td>
 
-                    <td className="text-center font-mono font-medium text-zinc-700 dark:text-zinc-300">
-                      {exam._count.enrollments}
-                    </td>
+                        {/* Enrollments count */}
+                        <td className="py-3 px-4 text-center">
+                          <div className="inline-flex flex-col items-center">
+                            <span className="font-mono font-semibold text-xs text-foreground">
+                              {exam._count.enrollments}
+                            </span>
+                            <span className="text-[10px] text-muted">
+                              {exam._count.enrollments === 1 ? "student" : "students"}
+                            </span>
+                          </div>
+                        </td>
 
-                    <td className="text-center">
-                      <Badge tone={examStatusTone(exam.status)}>
-                        {exam.status}
-                      </Badge>
-                    </td>
+                        {/* Status */}
+                        <td className="py-3 px-4 text-center">
+                          <Badge tone={examStatusTone(exam.status)} className="text-[11px] font-medium tracking-wide">
+                            {statusLabel(exam.status)}
+                          </Badge>
+                        </td>
 
-                    <td className="text-right">
+                        {/* Action */}
+                        <td className="py-3 px-4 text-right">
+                          <Link
+                            href={`/app/exams/${exam.id}`}
+                            className="btn btn-secondary btn-sm text-xs font-medium inline-flex items-center gap-1 hover:border-[var(--brand)] transition-all"
+                          >
+                            <span>Manage Studio</span>
+                            <ArrowRight className="size-3" />
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* Mobile Card List (Optimized for small screens) */}
+          <div className="space-y-3 md:hidden">
+            {exams.map((exam) => {
+              const isBatch = exam.targetType === "BATCH";
+              const targetName = isBatch
+                ? exam.batch?.name || "Batch (Unassigned)"
+                : exam.class?.name || "Class (Unassigned)";
+              const targetSub = isBatch
+                ? exam.batch?.code ? `Code: ${exam.batch.code}` : null
+                : exam.section ? `Section ${exam.section.name}` : "All Sections";
+
+              return (
+                <Card key={exam.id} className="p-4 space-y-3 hover:border-[var(--brand)] transition-colors">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1 min-w-0">
                       <Link
                         href={`/app/exams/${exam.id}`}
-                        className="btn btn-ghost btn-xs text-indigo-600 dark:text-indigo-400 font-medium"
+                        className="font-semibold text-sm text-foreground hover:text-[var(--brand)] transition-colors line-clamp-2"
                       >
-                        Manage Studio →
+                        {exam.title}
                       </Link>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                        <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] font-medium">
+                          {exam.code}
+                        </span>
+                        <span>•</span>
+                        <span className="capitalize">{exam.examType.replace(/_/g, " ").toLowerCase()}</span>
+                      </div>
+                    </div>
+                    <Badge tone={examStatusTone(exam.status)} className="shrink-0 text-[11px]">
+                      {statusLabel(exam.status)}
+                    </Badge>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 py-2 border-y border-[var(--border)] text-xs">
+                    <div>
+                      <span className="text-[10px] text-muted block uppercase tracking-wider font-semibold">Target</span>
+                      <span className="font-medium text-foreground truncate block">
+                        {targetName}
+                      </span>
+                      {targetSub && <span className="text-[10px] text-muted block truncate">{targetSub}</span>}
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-muted block uppercase tracking-wider font-semibold">Timeline</span>
+                      <span className="font-medium text-foreground block">
+                        {formatExamDate(exam.startDate)}
+                      </span>
+                      <span className="text-[10px] text-muted block">to {formatExamDate(exam.endDate)}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs pt-1">
+                    <div className="flex items-center gap-2 text-muted">
+                      <span><strong className="text-foreground">{exam._count.subjects}</strong> subjects</span>
+                      <span>•</span>
+                      <span><strong className="text-foreground">{exam._count.enrollments}</strong> students</span>
+                    </div>
+                    <Link
+                      href={`/app/exams/${exam.id}`}
+                      className="btn btn-secondary btn-sm text-xs flex items-center gap-1"
+                    >
+                      <span>Manage</span>
+                      <ArrowRight className="size-3" />
+                    </Link>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

@@ -1,18 +1,36 @@
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: knowletive-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=${DATABASE_URL:-postgresql://knowletive:knowletive@db:5432/knowletive?schema=public}
+      - DIRECT_URL=${DIRECT_URL:-postgresql://knowletive:knowletive@db:5432/knowletive?schema=public}
+      - SESSION_SECRET=${SESSION_SECRET:-replace-with-a-secure-random-64-character-string}
+      - APP_URL=${APP_URL:-http://localhost:3000}
+      - STORAGE_LOCAL_DIR=.data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+
   db:
     image: postgres:18-alpine
     container_name: knowletive-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: knowletive
-      POSTGRES_PASSWORD: knowletive
-      POSTGRES_DB: knowletive
-    ports:
-      - "5544:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-knowletive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowletive}
+      POSTGRES_DB: ${POSTGRES_DB:-knowletive}
     volumes:
-      - knowletive_pgdata:/var/lib/postgresql
+      - knowletive_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U knowletive -d knowletive"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-knowletive} -d ${POSTGRES_DB:-knowletive}"]
       interval: 5s
       timeout: 5s
       retries: 10

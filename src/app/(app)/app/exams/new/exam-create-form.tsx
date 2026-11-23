@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { AlertCircle, BookOpen, Layers } from "lucide-react";
 import { createExaminationAction } from "@/actions/exams";
@@ -52,6 +52,31 @@ export function ExamCreateForm({
 
   const activeClass = classes.find((c) => c.id === classId);
 
+  // Sync state if initial props arrived or updated dynamically
+  useEffect(() => {
+    if (!gradeScaleId && gradeScales.length > 0) {
+      setGradeScaleId(gradeScales.find((g) => g.isDefault)?.id || gradeScales[0]?.id || "");
+    }
+  }, [gradeScales, gradeScaleId]);
+
+  useEffect(() => {
+    if (!academicYearId && academicYears.length > 0) {
+      setAcademicYearId(academicYears[0]?.id || "");
+    }
+  }, [academicYears, academicYearId]);
+
+  useEffect(() => {
+    if (!classId && classes.length > 0) {
+      setClassId(classes[0]?.id || "");
+    }
+  }, [classes, classId]);
+
+  useEffect(() => {
+    if (!batchId && batches.length > 0) {
+      setBatchId(batches[0]?.id || "");
+    }
+  }, [batches, batchId]);
+
   // Auto-generate exam code from title
   const handleTitleChange = (val: string) => {
     setTitle(val);
@@ -64,18 +89,34 @@ export function ExamCreateForm({
     e.preventDefault();
     setError(null);
 
+    const resolvedGradeScaleId =
+      gradeScaleId || gradeScales.find((g) => g.isDefault)?.id || gradeScales[0]?.id || "";
+    const resolvedAcademicYearId =
+      academicYearId || academicYears[0]?.id || "";
+    const resolvedClassId = classId || classes[0]?.id || "";
+    const resolvedBatchId = batchId || batches[0]?.id || "";
+
+    if (!resolvedGradeScaleId) {
+      setError("Grading Scale is required");
+      return;
+    }
+    if (!resolvedAcademicYearId) {
+      setError("Academic Year is required");
+      return;
+    }
+
     startTransition(async () => {
       const payload = {
         title,
         code,
         examType,
         targetType,
-        academicYearId,
-        gradeScaleId,
+        academicYearId: resolvedAcademicYearId,
+        gradeScaleId: resolvedGradeScaleId,
         syllabusTrackId: syllabusTrackId || null,
-        classId: targetType === "CLASS_SECTION" ? classId : null,
+        classId: targetType === "CLASS_SECTION" ? resolvedClassId : null,
         sectionId: targetType === "CLASS_SECTION" && sectionId ? sectionId : null,
-        batchId: targetType === "BATCH" ? batchId : null,
+        batchId: targetType === "BATCH" ? resolvedBatchId : null,
         term: term || null,
         instructions: instructions || null,
         startDate,
@@ -200,7 +241,7 @@ export function ExamCreateForm({
             Academic Year *
           </label>
           <select
-            value={academicYearId}
+            value={academicYearId || academicYears[0]?.id || ""}
             onChange={(e) => setAcademicYearId(e.target.value)}
             className="select select-bordered w-full text-sm mt-1"
           >
@@ -217,10 +258,16 @@ export function ExamCreateForm({
             Grading Scale System *
           </label>
           <select
-            value={gradeScaleId}
+            value={gradeScaleId || gradeScales.find((g) => g.isDefault)?.id || gradeScales[0]?.id || ""}
             onChange={(e) => setGradeScaleId(e.target.value)}
             className="select select-bordered w-full text-sm mt-1"
+            required
           >
+            {gradeScales.length === 0 && (
+              <option value="" disabled>
+                No grading scale configured
+              </option>
+            )}
             {gradeScales.map((gs) => (
               <option key={gs.id} value={gs.id}>
                 {gs.name} {gs.isDefault ? "(Default)" : ""}
@@ -243,7 +290,7 @@ export function ExamCreateForm({
                 Class *
               </label>
               <select
-                value={classId}
+                value={classId || classes[0]?.id || ""}
                 onChange={(e) => {
                   setClassId(e.target.value);
                   setSectionId("");
@@ -282,7 +329,7 @@ export function ExamCreateForm({
               Coaching Batch *
             </label>
             <select
-              value={batchId}
+              value={batchId || batches[0]?.id || ""}
               onChange={(e) => setBatchId(e.target.value)}
               className="select select-bordered w-full text-sm mt-1"
             >

@@ -3,6 +3,7 @@ import { requirePlatformPermission } from "@/lib/rbac";
 import { hasPlatformPermission } from "@/lib/auth";
 import { platformNav } from "@/components/shell/nav";
 import { Shell } from "@/components/shell/shell";
+import { CopilotWidget } from "@/components/ai-copilot/CopilotWidget";
 
 export const metadata = { title: "Platform console" };
 
@@ -13,6 +14,8 @@ export default async function PlatformLayout({ children }: { children: React.Rea
   if (nav.length === 0) {
     redirect("/login");
   }
+
+  const hasAiAccess = user.isPlatformOwner || hasPlatformPermission(user, "platform.overview.read");
 
   return (
     <Shell
@@ -27,6 +30,7 @@ export default async function PlatformLayout({ children }: { children: React.Rea
       canViewPlatform
     >
       {children}
+      <CopilotWidget hasAccess={hasAiAccess} tenantName="Platform Console" />
     </Shell>
   );
 }

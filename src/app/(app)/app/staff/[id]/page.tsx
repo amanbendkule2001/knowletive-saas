@@ -164,11 +164,24 @@ export default async function StaffDetailPage({ params }: { params: Promise<{ id
                       defaultValue={membership.roleId}
                       disabled={membership.isOwner}
                     >
-                      {roles.map((role) => (
-                        <option key={role.id} value={role.id}>
-                          {role.name}
-                        </option>
-                      ))}
+                      <optgroup label="Staff & Faculty Roles">
+                        {roles
+                          .filter((r) => !["PARENT", "STUDENT"].includes(r.key))
+                          .map((role) => (
+                            <option key={role.id} value={role.id}>
+                              {role.name}
+                            </option>
+                          ))}
+                      </optgroup>
+                      <optgroup label="Portal Accounts">
+                        {roles
+                          .filter((r) => ["PARENT", "STUDENT"].includes(r.key))
+                          .map((role) => (
+                            <option key={role.id} value={role.id}>
+                              {role.name}
+                            </option>
+                          ))}
+                      </optgroup>
                     </select>
                     {membership.isOwner && <input type="hidden" name="roleId" value={membership.roleId} />}
                   </Field>

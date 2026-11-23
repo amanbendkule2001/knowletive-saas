@@ -3,11 +3,13 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import type { StudentStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { authorizeTenantWrite } from "@/lib/rbac";
 import { writeAudit } from "@/lib/audit";
 import { assertStaffCapacity, assertStudentCapacity, assertStudentCapacityTx } from "@/lib/entitlements";
 import { hashPassword } from "@/lib/auth";
+import { resolveUserBranchScope } from "@/lib/branch";
 import {
   classSchema,
   fieldErrors,
@@ -88,6 +90,36 @@ export async function createStudentAction(_prev: FormState, formData: FormData):
     return { error: "That admission number is already in use.", fieldErrors: { admissionNo: ["Already in use"] } };
   }
 
+  // Resolve authorized branch scope
+  const branchScope = await resolveUserBranchScope(ctx);
+  const rawBranchId = (formData.get("branchId") as string)?.trim() || null;
+  let targetBranchId: string | null = null;
+
+  if (branchScope.isBranchScoped) {
+    if (rawBranchId) {
+      if (!branchScope.allowedBranchIds.includes(rawBranchId)) {
+        return { error: "Access denied. You do not have permission to create students in this branch." };
+      }
+      targetBranchId = rawBranchId;
+    } else if (branchScope.assignedBranchId) {
+      targetBranchId = branchScope.assignedBranchId;
+    } else if (branchScope.allowedBranchIds.length === 1) {
+      targetBranchId = branchScope.allowedBranchIds[0];
+    } else {
+      return { error: "Please select an authorized branch for this student." };
+    }
+  } else {
+    if (rawBranchId) {
+      const branchExists = await db.branch.findFirst({
+        where: { id: rawBranchId, tenantId: ctx.tenant.id },
+      });
+      if (!branchExists) return { error: "The selected branch was not found." };
+      targetBranchId = rawBranchId;
+    } else {
+      targetBranchId = null;
+    }
+  }
+
   let studentId = "";
   try {
     studentId = await db.$transaction(async (tx) => {
@@ -96,6 +128,7 @@ export async function createStudentAction(_prev: FormState, formData: FormData):
       const student = await tx.student.create({
         data: {
           tenantId: ctx.tenant.id,
+          branchId: targetBranchId,
           admissionNo: d.admissionNo,
           firstName: d.firstName,
           lastName: d.lastName,
@@ -177,6 +210,36 @@ export async function updateStudentAction(_prev: FormState, formData: FormData):
   });
   if (!existing) return { error: "Student not found." };
 
+  // Verify access to student's current branch
+  const branchScope = await resolveUserBranchScope(ctx);
+  if (branchScope.isBranchScoped) {
+    if (!existing.branchId || !branchScope.allowedBranchIds.includes(existing.branchId)) {
+      return { error: "Access denied. You do not have permission to update students outside your authorized branch." };
+    }
+  }
+
+  // Handle cross-branch transfer permissions
+  let targetBranchId = existing.branchId;
+  if (formData.has("branchId")) {
+    const rawBranchId = (formData.get("branchId") as string)?.trim() || null;
+    if (rawBranchId !== existing.branchId) {
+      if (branchScope.isBranchScoped) {
+        if (!rawBranchId || !branchScope.allowedBranchIds.includes(rawBranchId)) {
+          return { error: "Access denied. You cannot transfer students to an unauthorized branch." };
+        }
+        targetBranchId = rawBranchId;
+      } else {
+        if (rawBranchId) {
+          const targetBranch = await db.branch.findFirst({
+            where: { id: rawBranchId, tenantId: ctx.tenant.id },
+          });
+          if (!targetBranch) return { error: "Target branch not found." };
+        }
+        targetBranchId = rawBranchId;
+      }
+    }
+  }
+
   let classId = d.classId || null;
   if (d.sectionId) {
     const section = await db.section.findFirst({
@@ -207,6 +270,7 @@ export async function updateStudentAction(_prev: FormState, formData: FormData):
   await db.student.update({
     where: { id: studentId },
     data: {
+      branchId: targetBranchId,
       admissionNo: d.admissionNo,
       firstName: d.firstName,
       lastName: d.lastName,
@@ -344,25 +408,83 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
     return { error: "The CSV must include admissionNo, firstName and lastName columns." };
   }
 
-  const [classes, sections, existing, plan] = await Promise.all([
+  // FIX-04: Deterministic upfront limit check on parsed data rows before DB queries or writes
+  if (rows.length > 300) {
+    return {
+      error: `This file contains ${rows.length} student records, which exceeds the maximum limit of 300 rows per import. No records were imported. Please split your file into batches of 300 or fewer.`,
+    };
+  }
+
+  const [classes, sections, existing, plan, branchScope, branches, existingStudentRole, existingParentRole] = await Promise.all([
     db.classLevel.findMany({ where: { tenantId: ctx.tenant.id } }),
     db.section.findMany({ where: { tenantId: ctx.tenant.id } }),
     db.student.findMany({ where: { tenantId: ctx.tenant.id }, select: { admissionNo: true } }),
     db.plan.findUnique({ where: { id: ctx.tenant.subscription?.planId ?? "" } }),
+    resolveUserBranchScope(ctx),
+    db.branch.findMany({
+      where: { tenantId: ctx.tenant.id, isActive: true },
+      select: { id: true, code: true, name: true },
+    }),
+    db.role.findFirst({ where: { tenantId: ctx.tenant.id, key: "STUDENT" } }),
+    db.role.findFirst({ where: { tenantId: ctx.tenant.id, key: "PARENT" } }),
   ]);
+
+  let sRoleId = existingStudentRole?.id;
+  if (!sRoleId) {
+    const sr = await db.role.create({
+      data: {
+        tenantId: ctx.tenant.id,
+        key: "STUDENT",
+        name: "Student",
+        description: "Student portal: timetable, attendance and notices.",
+        scope: "TENANT",
+        isSystem: true,
+      },
+    });
+    sRoleId = sr.id;
+  }
+
+  let pRoleId = existingParentRole?.id;
+  if (!pRoleId) {
+    const pr = await db.role.create({
+      data: {
+        tenantId: ctx.tenant.id,
+        key: "PARENT",
+        name: "Parent",
+        description: "Parent portal: own child's attendance, fees and notices.",
+        scope: "TENANT",
+        isSystem: true,
+      },
+    });
+    pRoleId = pr.id;
+  }
+
+  const defaultPassword = (formData.get("defaultPassword") as string)?.trim() || "Admin@123";
+  const commonPasswordHash = await hashPassword(defaultPassword);
 
   const classByName = new Map(classes.map((c) => [c.name.toLowerCase(), c]));
   const sectionByKey = new Map(sections.map((s) => [`${s.classId}:${s.name.toLowerCase()}`, s]));
   const existingNos = new Set(existing.map((s) => s.admissionNo.toLowerCase()));
 
+  const branchByLookup = new Map<string, string>();
+  for (const b of branches) {
+    branchByLookup.set(b.id.toLowerCase(), b.id);
+    branchByLookup.set(b.code.toLowerCase(), b.id);
+    branchByLookup.set(b.name.toLowerCase(), b.id);
+  }
+  const defaultFormBranchId = (formData.get("branchId") as string)?.trim() || null;
+
   type Candidate = {
     admissionNo: string;
+    branchId: string | null;
     firstName: string;
     lastName: string;
     email: string | null;
     phone: string | null;
     gender: string | null;
     dob: Date | null;
+    address: string | null;
+    status: StudentStatus;
     classId: string | null;
     sectionId: string | null;
     guardianName: string | null;
@@ -374,12 +496,9 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
   const candidates: Candidate[] = [];
   const skipped: string[] = [];
   const seen = new Set<string>();
+  const validStatuses = new Set<StudentStatus>(["ACTIVE", "INACTIVE", "ALUMNI"]);
 
   for (const [i, row] of rows.entries()) {
-    if (candidates.length >= 300) {
-      skipped.push(`Stopped at 300 rows (limit per import).`);
-      break;
-    }
     const admissionNo = col(row, "admissionno");
     const firstName = col(row, "firstname");
     const lastName = col(row, "lastname");
@@ -394,22 +513,71 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
     }
     seen.add(key);
 
+    // FIX-02 & FIX-03: Address mapping and strict StudentStatus enum validation
+    const address = col(row, "address") || null;
+    const rawStatus = col(row, "status").trim().toUpperCase();
+    let status: StudentStatus;
+    if (!rawStatus) {
+      status = "ACTIVE";
+    } else if (validStatuses.has(rawStatus as StudentStatus)) {
+      status = rawStatus as StudentStatus;
+    } else {
+      skipped.push(`Row ${i + 2}: invalid status '${rawStatus}'. Allowed statuses are ACTIVE, INACTIVE, ALUMNI.`);
+      continue;
+    }
+
     const className = (col(row, "class") || col(row, "classname")).toLowerCase();
     const sectionName = (col(row, "section") || col(row, "sectionname")).toLowerCase();
     const cls = className ? classByName.get(className) : undefined;
     const section = cls && sectionName ? sectionByKey.get(`${cls.id}:${sectionName}`) : undefined;
+
+    // Resolve and validate branch attribution for this imported row
+    const branchVal = (col(row, "branch") || col(row, "branchcode") || col(row, "branchid") || col(row, "branchname")).toLowerCase();
+    let rowBranchId: string | null = null;
+
+    if (branchVal) {
+      const resolved = branchByLookup.get(branchVal);
+      if (!resolved) {
+        skipped.push(`Row ${i + 2}: branch '${branchVal}' not found in this institute.`);
+        continue;
+      }
+      rowBranchId = resolved;
+    } else if (defaultFormBranchId) {
+      rowBranchId = defaultFormBranchId;
+    } else if (branchScope.isBranchScoped) {
+      if (branchScope.assignedBranchId) {
+        rowBranchId = branchScope.assignedBranchId;
+      } else if (branchScope.allowedBranchIds.length === 1) {
+        rowBranchId = branchScope.allowedBranchIds[0];
+      } else {
+        skipped.push(`Row ${i + 2}: branch attribution is required for branch-scoped staff.`);
+        continue;
+      }
+    } else {
+      rowBranchId = null;
+    }
+
+    if (branchScope.isBranchScoped) {
+      if (!rowBranchId || !branchScope.allowedBranchIds.includes(rowBranchId)) {
+        skipped.push(`Row ${i + 2}: access denied to import student into branch '${rowBranchId || "unassigned"}'.`);
+        continue;
+      }
+    }
 
     const genderRaw = col(row, "gender").toUpperCase();
     const dob = toDate(col(row, "dob") || null);
 
     candidates.push({
       admissionNo,
+      branchId: rowBranchId,
       firstName,
       lastName,
       email: col(row, "email") || null,
       phone: col(row, "phone") || null,
       gender: ["MALE", "FEMALE", "OTHER"].includes(genderRaw) ? genderRaw : null,
       dob,
+      address,
+      status,
       classId: section?.classId ?? cls?.id ?? null,
       sectionId: section?.id ?? null,
       guardianName: col(row, "guardianname") || null,
@@ -439,30 +607,148 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
     try {
       await db.$transaction(async (tx) => {
         await assertStudentCapacityTx(tx, ctx.tenant.id, 1);
+
+        // 1. Prepare student login account
+        const cleanAdmissionNo = c.admissionNo.trim();
+        const studentLoginEmail = c.email
+          ? c.email.trim().toLowerCase()
+          : `${cleanAdmissionNo.toLowerCase().replace(/[^a-z0-9._-]/g, "")}@student.${ctx.tenant.slug || "institute"}.com`;
+
+        let studentUser = await tx.user.findUnique({
+          where: { email: studentLoginEmail },
+        });
+
+        if (!studentUser) {
+          studentUser = await tx.user.create({
+            data: {
+              email: studentLoginEmail,
+              name: `${c.firstName} ${c.lastName}`.trim(),
+              passwordHash: commonPasswordHash,
+              status: "ACTIVE",
+              avatarColor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
+            },
+          });
+        }
+
+        const studentMembership = await tx.membership.findUnique({
+          where: {
+            tenantId_userId: {
+              tenantId: ctx.tenant.id,
+              userId: studentUser.id,
+            },
+          },
+        });
+        if (!studentMembership) {
+          await tx.membership.create({
+            data: {
+              tenantId: ctx.tenant.id,
+              userId: studentUser.id,
+              roleId: sRoleId,
+              branchId: c.branchId,
+              phone: c.phone || null,
+              status: "ACTIVE",
+            },
+          });
+        }
+
+        // 2. Create Student profile linked to studentUser
         const student = await tx.student.create({
           data: {
             tenantId: ctx.tenant.id,
+            userId: studentUser.id,
+            branchId: c.branchId,
             admissionNo: c.admissionNo,
             firstName: c.firstName,
             lastName: c.lastName,
-            email: c.email,
+            email: c.email || studentLoginEmail,
             phone: c.phone,
             gender: c.gender,
             dob: c.dob,
+            address: c.address,
+            status: c.status,
             classId: c.classId,
             sectionId: c.sectionId,
           },
         });
+
+        // 3. Prepare parent login account & guardian profile
         if (c.guardianName && c.guardianPhone) {
-          const guardian = await tx.guardian.create({
-            data: {
-              tenantId: ctx.tenant.id,
-              name: c.guardianName,
-              phone: c.guardianPhone,
-              email: c.guardianEmail,
-              relation: c.guardianRelation,
+          const cleanPhone = c.guardianPhone.trim();
+          const parentLoginEmail = c.guardianEmail
+            ? c.guardianEmail.trim().toLowerCase()
+            : `parent.${cleanPhone.replace(/[^0-9]/g, "")}@parent.${ctx.tenant.slug || "institute"}.com`;
+
+          let parentUser = await tx.user.findUnique({
+            where: { email: parentLoginEmail },
+          });
+
+          if (!parentUser) {
+            parentUser = await tx.user.create({
+              data: {
+                email: parentLoginEmail,
+                name: c.guardianName.trim(),
+                passwordHash: commonPasswordHash,
+                status: "ACTIVE",
+                avatarColor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
+              },
+            });
+          }
+
+          const parentMembership = await tx.membership.findUnique({
+            where: {
+              tenantId_userId: {
+                tenantId: ctx.tenant.id,
+                userId: parentUser.id,
+              },
             },
           });
+          if (!parentMembership) {
+            await tx.membership.create({
+              data: {
+                tenantId: ctx.tenant.id,
+                userId: parentUser.id,
+                roleId: pRoleId,
+                branchId: c.branchId,
+                phone: cleanPhone,
+                status: "ACTIVE",
+              },
+            });
+          }
+
+          let guardian = await tx.guardian.findFirst({
+            where: {
+              tenantId: ctx.tenant.id,
+              OR: [
+                { userId: parentUser.id },
+                { phone: cleanPhone },
+                ...(c.guardianEmail ? [{ email: c.guardianEmail.trim().toLowerCase() }] : []),
+              ],
+            },
+          });
+
+          if (guardian) {
+            if (!guardian.userId) {
+              guardian = await tx.guardian.update({
+                where: { id: guardian.id },
+                data: {
+                  userId: parentUser.id,
+                  email: guardian.email || c.guardianEmail || parentLoginEmail,
+                },
+              });
+            }
+          } else {
+            guardian = await tx.guardian.create({
+              data: {
+                tenantId: ctx.tenant.id,
+                userId: parentUser.id,
+                name: c.guardianName.trim(),
+                phone: cleanPhone,
+                email: c.guardianEmail || parentLoginEmail,
+                relation: c.guardianRelation,
+              },
+            });
+          }
+
           await tx.studentGuardian.create({
             data: { studentId: student.id, guardianId: guardian.id, isPrimary: true },
           });
@@ -484,6 +770,8 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
   });
 
   revalidatePath("/app/students");
+  revalidatePath("/app/parents");
+  revalidatePath("/portal");
   revalidatePath("/app");
 
   if (created === 0) {
@@ -493,9 +781,9 @@ export async function importStudentsAction(_prev: FormState, formData: FormData)
   }
 
   return {
-    success: `Imported ${created} student${created === 1 ? "" : "s"}${
-      skipped.length ? `. Skipped ${skipped.length} row${skipped.length === 1 ? "" : "s"}: ${skipped.slice(0, 3).join(" · ")}` : ""
-    }.`,
+    success: `Imported ${created} student${created === 1 ? "" : "s"}. Student and parent dashboard login accounts were created with common password "${defaultPassword}".${
+      skipped.length ? ` Skipped ${skipped.length} row${skipped.length === 1 ? "" : "s"}: ${skipped.slice(0, 3).join(" · ")}` : ""
+    }`,
   };
 }
 
@@ -762,6 +1050,34 @@ export async function inviteStaffAction(_prev: FormState, formData: FormData): P
       entityId: existing.id,
       meta: { role: role.key, email: d.email },
     });
+    if (role.key === "PARENT" || role.name.toLowerCase() === "parent") {
+      try {
+        const existingG = await db.guardian.findFirst({
+          where: {
+            tenantId: ctx.tenant.id,
+            OR: [
+              { userId: existing.id },
+              ...(d.email ? [{ email: d.email }] : []),
+              ...(d.phone ? [{ phone: d.phone }] : []),
+            ],
+          },
+        });
+        if (!existingG) {
+          await db.guardian.create({
+            data: {
+              tenantId: ctx.tenant.id,
+              userId: existing.id,
+              name: existing.name,
+              email: existing.email || null,
+              phone: d.phone || "—",
+              relation: "Guardian",
+            },
+          });
+        }
+      } catch {}
+      revalidatePath("/app/parents");
+    }
+
     revalidatePath("/app/staff");
     revalidatePath("/app");
     return { success: `${existing.name} was added with the role ${role.name}.` };
@@ -795,6 +1111,34 @@ export async function inviteStaffAction(_prev: FormState, formData: FormData): P
     entityId: user.id,
     meta: { role: role.key, email: user.email },
   });
+
+  if (role.key === "PARENT" || role.name.toLowerCase() === "parent") {
+    try {
+      const existingG = await db.guardian.findFirst({
+        where: {
+          tenantId: ctx.tenant.id,
+          OR: [
+            { userId: user.id },
+            ...(d.email ? [{ email: d.email }] : []),
+            ...(d.phone ? [{ phone: d.phone }] : []),
+          ],
+        },
+      });
+      if (!existingG) {
+        await db.guardian.create({
+          data: {
+            tenantId: ctx.tenant.id,
+            userId: user.id,
+            name: user.name,
+            email: user.email || null,
+            phone: d.phone || "—",
+            relation: "Guardian",
+          },
+        });
+      }
+    } catch {}
+    revalidatePath("/app/parents");
+  }
 
   revalidatePath("/app/staff");
   revalidatePath("/app");
@@ -843,6 +1187,34 @@ export async function updateStaffAction(_prev: FormState, formData: FormData): P
     entityId: membershipId,
     meta: { role: role.key, status, user: membership.user.email },
   });
+
+  if (role.key === "PARENT" || role.name.toLowerCase() === "parent") {
+    try {
+      const existingG = await db.guardian.findFirst({
+        where: {
+          tenantId: ctx.tenant.id,
+          OR: [
+            { userId: membership.userId },
+            ...(membership.user.email ? [{ email: membership.user.email }] : []),
+            ...(phone ? [{ phone }] : []),
+          ],
+        },
+      });
+      if (!existingG) {
+        await db.guardian.create({
+          data: {
+            tenantId: ctx.tenant.id,
+            userId: membership.userId,
+            name: membership.user.name,
+            email: membership.user.email || null,
+            phone: phone || membership.phone || "—",
+            relation: "Guardian",
+          },
+        });
+      }
+    } catch {}
+    revalidatePath("/app/parents");
+  }
 
   revalidatePath("/app/staff");
   revalidatePath(`/app/staff/${membershipId}`);

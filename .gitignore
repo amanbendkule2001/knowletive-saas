@@ -18,6 +18,7 @@ src/generated/
 
 # Local backups
 backups/
+scratch/
 *.dump
 *.backup
 *.bak

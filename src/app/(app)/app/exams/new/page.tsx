@@ -4,6 +4,8 @@ import { db } from "@/lib/db";
 import { requireTenantPermission } from "@/lib/rbac";
 import { PageHeader } from "@/components/ui/primitives";
 import { ExamCreateForm } from "./exam-create-form";
+import { getOrProvisionAcademicYears } from "@/lib/academic-years";
+import { getOrProvisionGradeScales } from "@/lib/grade-scales";
 
 export const metadata = { title: "Schedule New Examination" };
 
@@ -15,10 +17,7 @@ export default async function NewExamPage() {
   const defaultEndDate = new Date(now.getTime() + 7 * 86400000).toISOString().split("T")[0];
 
   const [academicYears, classes, batches, gradeScales, syllabusTracks] = await Promise.all([
-    db.academicYear.findMany({
-      where: { tenantId: ctx.tenant.id },
-      orderBy: { startDate: "desc" },
-    }),
+    getOrProvisionAcademicYears(ctx.tenant.id),
     db.classLevel.findMany({
       where: { tenantId: ctx.tenant.id },
       include: {
@@ -32,10 +31,7 @@ export default async function NewExamPage() {
       where: { tenantId: ctx.tenant.id, status: "ACTIVE" },
       orderBy: { name: "asc" },
     }),
-    db.gradeScale.findMany({
-      where: { tenantId: ctx.tenant.id },
-      orderBy: [{ isDefault: "desc" }, { name: "asc" }],
-    }),
+    getOrProvisionGradeScales(ctx.tenant.id),
     db.syllabusTrack.findMany({
       where: { tenantId: ctx.tenant.id },
       select: { id: true, name: true, code: true },

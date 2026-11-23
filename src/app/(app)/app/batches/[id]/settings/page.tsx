@@ -7,6 +7,7 @@ import { updateBatchAction, assignTeachersAction } from "@/actions/batches";
 import { ActionForm } from "@/components/ui/action-form";
 import { Field, FormGrid } from "@/components/ui/form-field";
 import { Card, PageHeader } from "@/components/ui/primitives";
+import { getOrProvisionAcademicYears } from "@/lib/academic-years";
 
 export const metadata = { title: "Batch Settings" };
 
@@ -26,11 +27,7 @@ export default async function BatchSettingsPage({
         _count: { select: { students: { where: { status: "ACTIVE" } } } },
       },
     }),
-    db.academicYear.findMany({
-      where: { tenantId: ctx.tenant.id },
-      select: { id: true, name: true, isActive: true },
-      orderBy: { startDate: "desc" },
-    }),
+    getOrProvisionAcademicYears(ctx.tenant.id),
     db.subject.findMany({
       where: { tenantId: ctx.tenant.id },
       select: { id: true, name: true, code: true },

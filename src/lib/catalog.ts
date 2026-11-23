@@ -96,6 +96,8 @@ export const PERMISSIONS: PermissionDef[] = [
   ...tenant("Fees", [
     ["fees.read", "View fee invoices"],
     ["fees.write", "Create invoices & record payments"],
+    ["fees.collect_offline", "Record offline cash/cheque payments at reception"],
+    ["fees.utr.view", "View unmasked UTR, cheque references and bank transaction details"],
   ]),
   ...tenant("Communication", [
     ["announcements.read", "View announcements"],
@@ -106,6 +108,16 @@ export const PERMISSIONS: PermissionDef[] = [
   ...tenant("AI Studio", [
     ["ai.use", "Use AI modules"],
     ["ai.read", "View AI usage history"],
+    ["ai.copilot", "Access conversational AI Copilot"],
+    ["ai.analytics.institute", "Query institutional KPI and operational analytics"],
+    ["ai.analytics.student", "Query student performance and demographic analytics"],
+    ["ai.analytics.attendance", "Query attendance trends and absenteeism analytics"],
+    ["ai.analytics.fees", "Query fee collections, dues and financial analytics"],
+    ["ai.analytics.admissions", "Query admissions CRM pipeline and enquiry analytics"],
+    ["ai.analytics.exams", "Query examination marks, distributions and report card analytics"],
+    ["ai.reports.generate", "Generate automated executive and academic AI reports"],
+    ["ai.document.intelligence", "Analyze institutional documents and unstructured records"],
+    ["ai.workflows", "Access automated multi-step AI educational workflows"],
   ]),
   ...tenant("Billing", [
     ["billing.read", "View subscription & invoices"],
@@ -131,6 +143,28 @@ export const TENANT_PERMISSIONS = PERMISSIONS.filter((p) => p.scope === "TENANT"
 
 export const TENANT_PERMISSION_KEYS = TENANT_PERMISSIONS.map((p) => p.key);
 export const PLATFORM_PERMISSION_KEYS = PLATFORM_PERMISSIONS.map((p) => p.key);
+
+export const AI_PERMISSION_KEYS = [
+  "tenant.ai.use",
+  "tenant.ai.read",
+  "tenant.ai.copilot",
+  "tenant.ai.analytics.institute",
+  "tenant.ai.analytics.student",
+  "tenant.ai.analytics.attendance",
+  "tenant.ai.analytics.fees",
+  "tenant.ai.analytics.admissions",
+  "tenant.ai.analytics.exams",
+  "tenant.ai.reports.generate",
+  "tenant.ai.document.intelligence",
+  "tenant.ai.workflows",
+] as const;
+
+export type AiPermissionKey = (typeof AI_PERMISSION_KEYS)[number];
+
+/** Base tenant operational permissions excluding privileged AI capabilities */
+export const TENANT_OPERATIONAL_PERMISSION_KEYS = TENANT_PERMISSION_KEYS.filter(
+  (k) => !AI_PERMISSION_KEYS.includes(k as AiPermissionKey),
+);
 
 /** Group order used by the permission matrix UI. */
 export const PERMISSION_GROUPS = PERMISSIONS.reduce<Record<string, PermissionDef[]>>(
@@ -215,8 +249,8 @@ export const TENANT_ROLE_TEMPLATES: RoleTemplate[] = [
     key: "INSTITUTE_ADMIN",
     scope: "TENANT",
     name: "Institute Admin",
-    description: "Full control of this institute.",
-    permissions: TENANT_PERMISSION_KEYS,
+    description: "Full operational control of this institute (excluding privileged AI by default).",
+    permissions: TENANT_OPERATIONAL_PERMISSION_KEYS,
   },
   {
     key: "PRINCIPAL",
@@ -231,7 +265,7 @@ export const TENANT_ROLE_TEMPLATES: RoleTemplate[] = [
       "students.read", "students.write", "parents.read", "parents.write",
       "staff.read", "academics.read", "academics.write",
       "attendance.read", "attendance.write", "fees.read",
-      "announcements.read", "announcements.write", "ai.use", "ai.read",
+      "announcements.read", "announcements.write",
       "notifications.read", "notifications.write",
       "billing.read", "roles.read", "settings.read", "audit.read", "reports.read",
     ),
@@ -240,14 +274,14 @@ export const TENANT_ROLE_TEMPLATES: RoleTemplate[] = [
     key: "TEACHER",
     scope: "TENANT",
     name: "Teacher",
-    description: "Classroom access: attendance, students and AI teaching tools.",
+    description: "Classroom access: attendance, students and academics.",
     permissions: tenantPerms(
       "batches.read",
       "syllabus.read", "syllabus.manage_lessons", "syllabus.update_progress", "syllabus.view_reports",
       "exams.read", "exams.enter_marks", "exams.view_reports",
       "students.read", "parents.read", "academics.read",
       "attendance.read", "attendance.write",
-      "announcements.read", "notifications.read", "ai.use", "reports.read",
+      "announcements.read", "notifications.read", "reports.read",
     ),
   },
   {
@@ -257,7 +291,7 @@ export const TENANT_ROLE_TEMPLATES: RoleTemplate[] = [
     description: "Fees, collections, dues and billing visibility.",
     permissions: tenantPerms(
       "leads.read",
-      "students.read", "parents.read", "fees.read", "fees.write",
+      "students.read", "parents.read", "fees.read", "fees.write", "fees.utr.view",
       "announcements.read", "notifications.read", "notifications.write",
       "billing.read", "reports.read",
     ),
@@ -272,7 +306,7 @@ export const TENANT_ROLE_TEMPLATES: RoleTemplate[] = [
       "batches.read", "batches.enroll",
       "students.read", "students.write", "parents.read", "parents.write",
       "announcements.read", "notifications.read", "notifications.write",
-      "fees.read", "attendance.read",
+      "fees.collect_offline", "attendance.read",
     ),
   },
   {

@@ -3,7 +3,7 @@ import { Plus, Search, Users } from "lucide-react";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requireTenantPermission } from "@/lib/rbac";
-import { hasTenantPermission } from "@/lib/auth";
+import { hasTenantPermission, hashPassword } from "@/lib/auth";
 import {
   Avatar,
   Badge,
@@ -33,6 +33,108 @@ export default async function ParentsPage({
   const q = (sp.q ?? "").trim();
   const page = Math.max(1, Number(sp.page ?? "1") || 1);
   const tenantId = ctx.tenant.id;
+
+  // Auto-sync any tenant members who have the PARENT role into the Guardian table
+  try {
+    const parentMembers = await db.membership.findMany({
+      where: {
+        tenantId,
+        role: { key: "PARENT" },
+      },
+      include: { user: true },
+    });
+
+    for (const m of parentMembers) {
+      const existing = await db.guardian.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { userId: m.userId },
+            ...(m.user.email ? [{ email: m.user.email }] : []),
+            ...(m.phone ? [{ phone: m.phone }] : []),
+          ],
+        },
+      });
+
+      if (!existing) {
+        await db.guardian.create({
+          data: {
+            tenantId,
+            userId: m.userId,
+            name: m.user.name,
+            email: m.user.email || null,
+            phone: m.phone || "—",
+            relation: "Guardian",
+          },
+        });
+      } else if (!existing.userId) {
+        await db.guardian.update({
+          where: { id: existing.id },
+          data: { userId: m.userId },
+        });
+      }
+    }
+
+    // Auto-provision user accounts for existing guardians lacking a login
+    const unlinkedGuardians = await db.guardian.findMany({
+      where: { tenantId, userId: null },
+    });
+    if (unlinkedGuardians.length > 0) {
+      let parentRole = await db.role.findFirst({
+        where: { tenantId, key: "PARENT" },
+      });
+      if (!parentRole) {
+        parentRole = await db.role.create({
+          data: {
+            tenantId,
+            key: "PARENT",
+            name: "Parent",
+            description: "Parent portal: own child's attendance, fees and notices.",
+            scope: "TENANT",
+            isSystem: true,
+          },
+        });
+      }
+      const defaultPasswordHash = await hashPassword("Admin@123");
+      for (const g of unlinkedGuardians) {
+        const cleanPhone = g.phone.trim();
+        const parentEmail =
+          g.email?.trim().toLowerCase() ||
+          `parent.${cleanPhone.replace(/[^0-9]/g, "")}@parent.${ctx.tenant.slug || "institute"}.com`;
+        let user = await db.user.findUnique({ where: { email: parentEmail } });
+        if (!user) {
+          user = await db.user.create({
+            data: {
+              email: parentEmail,
+              name: g.name,
+              passwordHash: defaultPasswordHash,
+              status: "ACTIVE",
+            },
+          });
+        }
+        const member = await db.membership.findUnique({
+          where: { tenantId_userId: { tenantId, userId: user.id } },
+        });
+        if (!member) {
+          await db.membership.create({
+            data: {
+              tenantId,
+              userId: user.id,
+              roleId: parentRole.id,
+              phone: cleanPhone,
+              status: "ACTIVE",
+            },
+          });
+        }
+        await db.guardian.update({
+          where: { id: g.id },
+          data: { userId: user.id },
+        });
+      }
+    }
+  } catch {
+    // Non-blocking sync fallback
+  }
 
   const where: Prisma.GuardianWhereInput = {
     tenantId,

@@ -3,6 +3,8 @@ import "server-only";
 import { db } from "@/lib/db";
 import { AI_FEATURE_MAP } from "@/lib/catalog";
 import { startOfMonth } from "@/lib/format";
+import { detectPromptInjection, frameUserPrompt, scrubPii } from "@/lib/ai-security";
+import { rateLimit } from "@/lib/rate-limit";
 
 export type AiRunInput = {
   tenantId: string;
@@ -182,6 +184,10 @@ async function generate(input: AiRunInput): Promise<Generation> {
     const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
     const feature = AI_FEATURE_MAP.get(input.featureKey);
 
+    // Security Hardening: Scrub PII and frame user input inside XML tags
+    const { sanitized: scrubbedPrompt } = scrubPii(input.prompt);
+    const framedUserMessage = frameUserPrompt(scrubbedPrompt);
+
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -201,7 +207,7 @@ async function generate(input: AiRunInput): Promise<Generation> {
             role: "user",
             content: `Institute: ${input.instituteName} (${input.instituteType}). Module: ${
               feature?.label ?? input.featureKey
-            }.\n\nBrief:\n${input.prompt}`,
+            }.\n\n${framedUserMessage}`,
           },
         ],
       }),
@@ -238,6 +244,18 @@ async function generate(input: AiRunInput): Promise<Generation> {
  * generations are refunded so users never lose credits to a provider outage.
  */
 export async function runAiJob(input: AiRunInput) {
+  // Security Guardrail 1: Prompt injection detection
+  const injection = detectPromptInjection(input.prompt);
+  if (injection.isSuspicious) {
+    throw new Error(injection.reason ?? "Input rejected by security guardrails.");
+  }
+
+  // Security Guardrail 2: Burst rate limiting (10 requests per minute per user)
+  const limiter = await rateLimit(`ai:run:${input.userId}`, 10, 60_000);
+  if (!limiter.ok) {
+    throw new Error("You are generating AI requests too quickly. Please wait a moment before trying again.");
+  }
+
   const feature = AI_FEATURE_MAP.get(input.featureKey);
   if (!feature) throw new Error("Unknown AI module");
 

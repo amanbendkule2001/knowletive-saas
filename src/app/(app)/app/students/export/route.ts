@@ -1,11 +1,7 @@
 import { getTenantContext, hasTenantPermission, isStaffMember } from "@/lib/auth";
 import { db } from "@/lib/db";
-
-function cell(value: string | number | null | undefined) {
-  const text = value === null || value === undefined ? "" : String(value);
-  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
-  return text;
-}
+import { escapeCsvCell } from "@/lib/csv";
+import { resolveUserBranchScope, buildBranchFilter } from "@/lib/branch";
 
 export async function GET() {
   const ctx = await getTenantContext();
@@ -19,8 +15,11 @@ export async function GET() {
     );
   }
 
+  const branchScope = await resolveUserBranchScope(ctx);
+  const branchFilter = branchScope.isBranchScoped ? buildBranchFilter(branchScope.allowedBranchIds) : {};
+
   const students = await db.student.findMany({
-    where: { tenantId: ctx.tenant.id, status: { not: "ALUMNI" } },
+    where: { tenantId: ctx.tenant.id, status: { not: "ALUMNI" }, ...branchFilter },
     include: {
       section: { include: { class: true } },
       guardians: { include: { guardian: true }, orderBy: { isPrimary: "desc" } },
@@ -67,7 +66,7 @@ export async function GET() {
     ];
   });
 
-  const csv = [header, ...rows].map((row) => row.map(cell).join(",")).join("\r\n");
+  const csv = [header, ...rows].map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
   const stamp = new Date().toISOString().slice(0, 10);
   const slug = ctx.tenant.slug.replace(/[^a-z0-9-]/gi, "").toLowerCase() || "institute";
 

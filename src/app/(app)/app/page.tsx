@@ -14,6 +14,8 @@ import {
 import { requireTenant } from "@/lib/rbac";
 import { db } from "@/lib/db";
 import { hasTenantPermission, isStaffMember } from "@/lib/auth";
+import { resolveUserBranchScope } from "@/lib/branch";
+import { getEffectiveFeeCollectedSum } from "@/lib/branch-reconciliation";
 import { getAiUsage } from "@/lib/billing";
 import { date, isoDate, money, monthLabel, num, pct, startOfDay, startOfMonth, timeAgo } from "@/lib/format";
 import {
@@ -42,6 +44,20 @@ export default async function AppOverview() {
   const sixMonthsAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
   const sevenDaysAgo = new Date(today.getTime() - 7 * 86_400_000);
 
+  const branchScope = await resolveUserBranchScope(ctx);
+  const canReadFees = hasTenantPermission(ctx, "tenant.fees.read");
+  const canReadAudit = hasTenantPermission(ctx, "tenant.audit.read");
+
+  // Enforce branch isolation for financial aggregates and student rosters
+  const feeBranchFilter = branchScope.isBranchScoped
+    ? { branchId: { in: branchScope.allowedBranchIds } }
+    : {};
+  const studentBranchFilter = branchScope.isBranchScoped
+    ? { branchId: { in: branchScope.allowedBranchIds } }
+    : {};
+
+  const shouldQueryFees = canReadFees && (!branchScope.isBranchScoped || branchScope.allowedBranchIds.length > 0);
+
   const [
     students,
     staff,
@@ -58,7 +74,7 @@ export default async function AppOverview() {
     classes,
     aiUsage,
   ] = await Promise.all([
-    db.student.count({ where: { tenantId, status: "ACTIVE" } }),
+    db.student.count({ where: { tenantId, status: "ACTIVE", ...studentBranchFilter } }),
     db.membership.count({ where: { tenantId, status: "ACTIVE" } }),
     db.attendance.groupBy({
       by: ["status"],
@@ -70,16 +86,24 @@ export default async function AppOverview() {
       orderBy: { date: "desc" },
       select: { date: true },
     }),
-    db.feePayment.aggregate({
-      where: { tenantId, paidAt: { gte: monthStart } },
-      _sum: { amount: true },
-    }),
-    db.feeInvoice.findMany({
-      where: { tenantId, status: { in: ["PENDING", "PARTIAL", "OVERDUE"] } },
-      select: { amount: true, paidAmount: true, dueDate: true },
-    }),
+    shouldQueryFees
+      ? (branchScope.isBranchScoped
+          ? getEffectiveFeeCollectedSum(tenantId, monthStart, branchScope.allowedBranchIds, db).then((total) => ({
+              _sum: { amount: total },
+            }))
+          : db.feePayment.aggregate({
+              where: { tenantId, paidAt: { gte: monthStart }, ...feeBranchFilter },
+              _sum: { amount: true },
+            }))
+      : Promise.resolve({ _sum: { amount: 0 } }),
+    shouldQueryFees
+      ? db.feeInvoice.findMany({
+          where: { tenantId, status: { in: ["PENDING", "PARTIAL", "OVERDUE"] }, ...feeBranchFilter },
+          select: { amount: true, paidAmount: true, dueDate: true },
+        })
+      : Promise.resolve([]),
     db.student.findMany({
-      where: { tenantId, status: "ACTIVE" },
+      where: { tenantId, status: "ACTIVE", ...studentBranchFilter },
       include: { section: { include: { class: true } }, guardians: { include: { guardian: true } } },
       orderBy: { createdAt: "desc" },
       take: 5,
@@ -89,11 +113,15 @@ export default async function AppOverview() {
       orderBy: [{ pinned: "desc" }, { publishedAt: "desc" }],
       take: 4,
     }),
-    db.auditLog.findMany({ where: { tenantId }, orderBy: { createdAt: "desc" }, take: 6 }),
-    db.feePayment.findMany({
-      where: { tenantId, paidAt: { gte: sixMonthsAgo } },
-      select: { amount: true, paidAt: true },
-    }),
+    canReadAudit
+      ? db.auditLog.findMany({ where: { tenantId }, orderBy: { createdAt: "desc" }, take: 6 })
+      : Promise.resolve([]),
+    shouldQueryFees
+      ? db.feePayment.findMany({
+          where: { tenantId, paidAt: { gte: sixMonthsAgo }, ...feeBranchFilter },
+          select: { amount: true, paidAt: true },
+        })
+      : Promise.resolve([]),
     db.attendance.groupBy({
       by: ["date", "status"],
       where: { tenantId, date: { gte: sevenDaysAgo } },
@@ -101,7 +129,7 @@ export default async function AppOverview() {
     }),
     db.student.groupBy({
       by: ["classId"],
-      where: { tenantId, status: "ACTIVE" },
+      where: { tenantId, status: "ACTIVE", ...studentBranchFilter },
       _count: { _all: true },
     }),
     db.classLevel.findMany({ where: { tenantId }, orderBy: { order: "asc" } }),
@@ -214,35 +242,41 @@ export default async function AppOverview() {
           tone={attendanceRate >= 90 ? "success" : attendanceRate >= 75 ? "warning" : "danger"}
           href="/app/attendance"
         />
-        <StatCard
-          label="Collected this month"
-          value={money(collected)}
-          sub={`Since ${date(monthStart)}`}
-          icon={<Wallet className="size-4" />}
-          tone="success"
-          href="/app/fees"
-        />
-        <StatCard
-          label="Outstanding fees"
-          value={money(outstanding)}
-          sub={`${outstandingInvoices.length} invoices · ${overdueCount} overdue`}
-          icon={<CircleDollarSign className="size-4" />}
-          tone={outstanding > 0 ? "warning" : "success"}
-          href="/app/fees?status=OVERDUE"
-        />
+        {canReadFees && (
+          <StatCard
+            label="Collected this month"
+            value={money(collected)}
+            sub={`Since ${date(monthStart)}`}
+            icon={<Wallet className="size-4" />}
+            tone="success"
+            href="/app/fees"
+          />
+        )}
+        {canReadFees && (
+          <StatCard
+            label="Outstanding fees"
+            value={money(outstanding)}
+            sub={`${outstandingInvoices.length} invoices · ${overdueCount} overdue`}
+            icon={<CircleDollarSign className="size-4" />}
+            tone={outstanding > 0 ? "warning" : "success"}
+            href="/app/fees?status=OVERDUE"
+          />
+        )}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[1.55fr_1fr]">
-        <Card>
-          <CardHeader
-            title="Fee collections"
-            description="Recorded payments over the last six months"
-            action={<Badge tone="brand">GST ready</Badge>}
-          />
-          <div className="p-4">
-            <AreaChart data={months} format="money" height={220} />
-          </div>
-        </Card>
+        {canReadFees && (
+          <Card>
+            <CardHeader
+              title="Fee collections"
+              description="Recorded payments over the last six months"
+              action={<Badge tone="brand">GST ready</Badge>}
+            />
+            <div className="p-4">
+              <AreaChart data={months} format="money" height={220} />
+            </div>
+          </Card>
+        )}
 
         <Card>
           <CardHeader
@@ -461,37 +495,39 @@ export default async function AppOverview() {
           </div>
         </Card>
 
-        <Card>
-          <CardHeader
-            title="Recent activity"
-            description="Audit trail"
-            action={
-              <Link href="/app/settings" className="link text-xs">
-                Settings
-              </Link>
-            }
-          />
-          <div className="divide-y divide-[var(--border)]">
-            {audit.map((entry) => (
-              <div key={entry.id} className="flex items-start gap-2.5 px-4 py-2.5">
-                <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-[var(--brand)]" />
-                <div className="min-w-0">
-                  <p className="truncate text-[12px]">
-                    <span className="font-medium">{entry.actorName}</span>{" "}
-                    <span className="text-muted">{entry.action.replace(/\./g, " ")}</span>
-                  </p>
-                  <p className="text-[10px] text-[var(--muted-2)]">
-                    {timeAgo(entry.createdAt)}
-                    {entry.entity ? ` · ${entry.entity}` : ""}
-                  </p>
+        {canReadAudit && (
+          <Card>
+            <CardHeader
+              title="Recent activity"
+              description="Audit trail"
+              action={
+                <Link href="/app/settings" className="link text-xs">
+                  Settings
+                </Link>
+              }
+            />
+            <div className="divide-y divide-[var(--border)]">
+              {audit.map((entry) => (
+                <div key={entry.id} className="flex items-start gap-2.5 px-4 py-2.5">
+                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-[var(--brand)]" />
+                  <div className="min-w-0">
+                    <p className="truncate text-[12px]">
+                      <span className="font-medium">{entry.actorName}</span>{" "}
+                      <span className="text-muted">{entry.action.replace(/\./g, " ")}</span>
+                    </p>
+                    <p className="text-[10px] text-[var(--muted-2)]">
+                      {timeAgo(entry.createdAt)}
+                      {entry.entity ? ` · ${entry.entity}` : ""}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
-            {audit.length === 0 && (
-              <p className="px-4 py-8 text-center text-xs text-muted">No activity recorded yet.</p>
-            )}
-          </div>
-        </Card>
+              ))}
+              {audit.length === 0 && (
+                <p className="px-4 py-8 text-center text-xs text-muted">No activity recorded yet.</p>
+              )}
+            </div>
+          </Card>
+        )}
       </div>
 
       {plan && (students / plan.maxStudents > 0.9 || staff / plan.maxStaff > 0.9) && (
