@@ -3,12 +3,17 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { requirePlatformPermission } from "@/lib/rbac";
+import {
+  requirePlatformPermission,
+  ensurePermissionsInDb,
+  validateRolePermissions,
+} from "@/lib/rbac";
 import { hashPassword } from "@/lib/auth";
 import { writeAudit } from "@/lib/audit";
 import { slugify, sequenceNumber } from "@/lib/utils";
 import { addDays, addMonths } from "@/lib/format";
 import { createSubscriptionInvoice, markInvoicePaid } from "@/lib/billing";
+import { DEFAULT_CBSE_BANDS } from "@/lib/grade-scales";
 import {
   PLATFORM_PERMISSION_KEYS,
   PLATFORM_ROLE_TEMPLATES,
@@ -70,6 +75,8 @@ export async function createInstituteAction(_prev: FormState, formData: FormData
 
   let tenantId = "";
 
+  await ensurePermissionsInDb(TENANT_PERMISSION_KEYS, "TENANT");
+
   await db.$transaction(async (tx) => {
     const tenant = await tx.tenant.create({
       data: {
@@ -92,6 +99,43 @@ export async function createInstituteAction(_prev: FormState, formData: FormData
       },
     });
     tenantId = tenant.id;
+
+    await tx.academicYear.createMany({
+      data: [
+        {
+          tenantId: tenant.id,
+          name: "2025-26",
+          startDate: new Date("2025-04-01T00:00:00.000Z"),
+          endDate: new Date("2026-03-31T23:59:59.999Z"),
+          isActive: false,
+        },
+        {
+          tenantId: tenant.id,
+          name: "2026-27",
+          startDate: new Date("2026-04-01T00:00:00.000Z"),
+          endDate: new Date("2027-03-31T23:59:59.999Z"),
+          isActive: true,
+        },
+      ],
+      skipDuplicates: true,
+    });
+
+    await tx.gradeScale.create({
+      data: {
+        tenantId: tenant.id,
+        name: "CBSE 9-Point Grading System",
+        code: "CBSE-9",
+        description: "Standard 9-band academic performance scale with letter grades and grade points.",
+        isDefault: true,
+        isSystem: true,
+        bands: {
+          create: DEFAULT_CBSE_BANDS.map((b) => ({
+            ...b,
+            tenantId: tenant.id,
+          })),
+        },
+      },
+    });
 
     await tx.tenantSubscription.create({
       data: {
@@ -493,28 +537,35 @@ export async function savePlatformRoleAction(_prev: FormState, formData: FormDat
     return { error: "The owner role always has every permission and cannot be edited." };
   }
 
-  const permissions = formData
-    .getAll("permissions")
-    .map(String)
-    .filter((p) => PLATFORM_PERMISSION_KEYS.includes(p));
+  const rawPermissions = formData.getAll("permissions").map(String);
+  const validation = validateRolePermissions(rawPermissions, "PLATFORM", true);
+  if (!validation.ok) return { error: validation.error };
+  const permissions = validation.validatedKeys;
 
-  await db.$transaction([
-    db.rolePermission.deleteMany({ where: { roleId } }),
-    db.rolePermission.createMany({
-      data: permissions.map((permissionKey) => ({ roleId, permissionKey })),
-    }),
-    db.auditLog.create({
-      data: {
-        actorId: actor.id,
-        actorType: "PLATFORM",
-        actorName: actor.name,
-        action: "role.update",
-        entity: "Role",
-        entityId: roleId,
-        meta: { permissions: permissions.length },
-      },
-    }),
-  ]);
+  try {
+    await ensurePermissionsInDb(permissions, "PLATFORM");
+
+    await db.$transaction([
+      db.rolePermission.deleteMany({ where: { roleId } }),
+      db.rolePermission.createMany({
+        data: permissions.map((permissionKey) => ({ roleId, permissionKey })),
+      }),
+      db.auditLog.create({
+        data: {
+          actorId: actor.id,
+          actorType: "PLATFORM",
+          actorName: actor.name,
+          action: "role.update",
+          entity: "Role",
+          entityId: roleId,
+          meta: { permissions: permissions.length },
+        },
+      }),
+    ]);
+  } catch (err) {
+    console.error("[savePlatformRoleAction] Failed to update platform role:", err);
+    return { error: "Failed to update platform role permissions. Please try again." };
+  }
 
   revalidatePath("/platform/roles");
   return { success: `${role.name} now has ${permissions.length} permissions.` };

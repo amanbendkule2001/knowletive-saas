@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { getTenantContext, hasTenantPermission, isStaffMember } from "@/lib/auth";
 import { authorizeTenantWrite } from "@/lib/rbac";
+import { resolveUserBranchScope } from "@/lib/branch";
 import { writeAudit } from "@/lib/audit";
 import { assertStudentCapacityTx } from "@/lib/entitlements";
 import { fieldErrors, type FormState } from "@/lib/validation";
@@ -86,12 +87,38 @@ export async function createLeadAction(_prev: FormState, formData: FormData): Pr
     if (year) academicYearId = year.id;
   }
 
+  // Resolve branch attribution from server context
+  const branchScope = await resolveUserBranchScope(ctx);
+  if (branchScope.mode === "NO_ACCESS") {
+    return { error: "Access denied. You do not have an active branch assignment or permission to create leads." };
+  }
+  const rawBranchId = (formData.get("branchId") as string)?.trim() || null;
+  let targetBranchId: string | null = null;
+  if (branchScope.isBranchScoped) {
+    if (rawBranchId) {
+      if (branchScope.allowedBranchIds.includes(rawBranchId)) {
+        targetBranchId = rawBranchId;
+      } else {
+        return { error: "Access denied to create lead for this branch." };
+      }
+    } else if (branchScope.assignedBranchId) {
+      targetBranchId = branchScope.assignedBranchId;
+    } else if (branchScope.allowedBranchIds.length === 1) {
+      targetBranchId = branchScope.allowedBranchIds[0];
+    } else {
+      return { error: "Please select an authorized branch for this lead." };
+    }
+  } else {
+    targetBranchId = rawBranchId;
+  }
+
   let leadId = "";
   try {
     leadId = await db.$transaction(async (tx) => {
       const lead = await tx.lead.create({
         data: {
           tenantId: ctx.tenant.id,
+          branchId: targetBranchId,
           studentName: d.studentName,
           dob: toDate(d.dob),
           guardianName: d.guardianName,
@@ -156,6 +183,34 @@ export async function updateLeadAction(_prev: FormState, formData: FormData): Pr
   });
   if (!existing) return { error: "Lead enquiry not found in this institute." };
 
+  const branchScope = await resolveUserBranchScope(ctx);
+  if (branchScope.isBranchScoped) {
+    if (!existing.branchId || !branchScope.allowedBranchIds.includes(existing.branchId)) {
+      return { error: "Access denied. You do not have permission to update leads outside your authorized branch." };
+    }
+  }
+
+  let targetBranchId = existing.branchId;
+  if (formData.has("branchId")) {
+    const rawBranchId = (formData.get("branchId") as string)?.trim() || null;
+    if (rawBranchId !== existing.branchId) {
+      if (branchScope.isBranchScoped) {
+        if (!rawBranchId || !branchScope.allowedBranchIds.includes(rawBranchId)) {
+          return { error: "Access denied. You cannot transfer leads to an unauthorized branch." };
+        }
+        targetBranchId = rawBranchId;
+      } else {
+        if (rawBranchId) {
+          const targetBranch = await db.branch.findFirst({
+            where: { id: rawBranchId, tenantId: ctx.tenant.id },
+          });
+          if (!targetBranch) return { error: "Target branch not found." };
+        }
+        targetBranchId = rawBranchId;
+      }
+    }
+  }
+
   const parsed = leadSchema.safeParse({
     studentName: formData.get("studentName"),
     dob: formData.get("dob"),
@@ -190,6 +245,7 @@ export async function updateLeadAction(_prev: FormState, formData: FormData): Pr
       await tx.lead.update({
         where: { id: leadId },
         data: {
+          branchId: targetBranchId,
           studentName: d.studentName,
           dob: toDate(d.dob),
           guardianName: d.guardianName,
@@ -259,6 +315,13 @@ export async function logLeadActivityAction(_prev: FormState, formData: FormData
   });
   if (!lead) return { error: "Lead not found in this institute." };
 
+  const branchScope = await resolveUserBranchScope(ctx);
+  if (branchScope.isBranchScoped) {
+    if (!lead.branchId || !branchScope.allowedBranchIds.includes(lead.branchId)) {
+      return { error: "Access denied. You do not have permission to log activity for this lead." };
+    }
+  }
+
   try {
     await db.$transaction(async (tx) => {
       await tx.leadActivity.create({
@@ -318,6 +381,13 @@ export async function deleteLeadAction(formData: FormData) {
   });
   if (!lead) return;
 
+  const branchScope = await resolveUserBranchScope(ctx);
+  if (branchScope.isBranchScoped) {
+    if (!lead.branchId || !branchScope.allowedBranchIds.includes(lead.branchId)) {
+      redirect(`/app/leads/${leadId}?error=${encodeURIComponent("Access denied. You do not have permission to delete leads outside your branch.")}`);
+    }
+  }
+
   if (lead.status === "CONVERTED" || lead.convertedStudentId) {
     redirect(`/app/leads/${leadId}?error=${encodeURIComponent("Converted leads cannot be deleted because an official student record exists.")}`);
   }
@@ -353,6 +423,13 @@ export async function draftLeadReplyAction(
     where: { id: leadId, tenantId: ctx.tenant.id },
   });
   if (!lead) return { error: "Lead not found in this institute." };
+
+  const branchScope = await resolveUserBranchScope(ctx);
+  if (branchScope.isBranchScoped) {
+    if (!lead.branchId || !branchScope.allowedBranchIds.includes(lead.branchId)) {
+      return { error: "Access denied. You do not have permission to log activity for this lead." };
+    }
+  }
 
   const reply = `Admission Enquiry Reply — ${ctx.tenant.name}
 
@@ -418,6 +495,13 @@ export async function convertLeadAction(_prev: FormState, formData: FormData): P
         throw new Error("This lead has already been converted to an active student.");
       }
 
+      const branchScope = await resolveUserBranchScope(ctx);
+      if (branchScope.isBranchScoped) {
+        if (!lead.branchId || !branchScope.allowedBranchIds.includes(lead.branchId)) {
+          throw new Error("Access denied. You do not have permission to convert leads outside your branch.");
+        }
+      }
+
       // 3. TRANSACTIONAL QUOTA CHECK (enforced under the Tenant lock)
       await assertStudentCapacityTx(tx, ctx.tenant.id, 1);
 
@@ -464,6 +548,7 @@ export async function convertLeadAction(_prev: FormState, formData: FormData): P
       const student = await tx.student.create({
         data: {
           tenantId: ctx.tenant.id,
+          branchId: lead.branchId,
           admissionNo: d.admissionNo,
           firstName: d.firstName,
           lastName: d.lastName,

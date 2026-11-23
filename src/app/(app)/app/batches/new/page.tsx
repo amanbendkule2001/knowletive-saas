@@ -6,6 +6,7 @@ import { createBatchAction } from "@/actions/batches";
 import { ActionForm } from "@/components/ui/action-form";
 import { Field, FormGrid } from "@/components/ui/form-field";
 import { Card, PageHeader } from "@/components/ui/primitives";
+import { getOrProvisionAcademicYears } from "@/lib/academic-years";
 
 export const metadata = { title: "Create Batch" };
 
@@ -13,11 +14,7 @@ export default async function NewBatchPage() {
   const ctx = await requireTenantPermission("tenant.batches.write");
 
   const [academicYears, subjects, teachers] = await Promise.all([
-    db.academicYear.findMany({
-      where: { tenantId: ctx.tenant.id },
-      select: { id: true, name: true, isActive: true },
-      orderBy: { startDate: "desc" },
-    }),
+    getOrProvisionAcademicYears(ctx.tenant.id),
     db.subject.findMany({
       where: { tenantId: ctx.tenant.id },
       select: { id: true, name: true, code: true },
@@ -86,6 +83,11 @@ export default async function NewBatchPage() {
                 defaultValue={defaultYearId}
                 className="input text-xs w-full"
               >
+                {academicYears.length === 0 && (
+                  <option value="" disabled>
+                    No academic years configured (check Settings)
+                  </option>
+                )}
                 {academicYears.map((y) => (
                   <option key={y.id} value={y.id}>
                     {y.name} {y.isActive ? "(Current)" : ""}

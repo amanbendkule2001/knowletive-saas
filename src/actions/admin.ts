@@ -4,7 +4,13 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requireTenant, authorizeTenantWrite } from "@/lib/rbac";
+import {
+  requireTenant,
+  authorizeTenantWrite,
+  ensurePermissionsInDb,
+  validateRolePermissions,
+} from "@/lib/rbac";
+import { isVerifiedInstituteOwner, isVerifiedPlatformOwner } from "@/lib/ai-permissions";
 import { writeAudit } from "@/lib/audit";
 import { createSubscriptionInvoice } from "@/lib/billing";
 import { TENANT_PERMISSION_KEYS } from "@/lib/catalog";
@@ -16,7 +22,7 @@ import {
 
 const roleSchema = z.object({
   name: z.string().trim().min(2, "Role name is required").max(50),
-  description: z.string().trim().max(200).optional().or(z.literal("")),
+  description: z.string().trim().max(200).nullish().or(z.literal("")),
 });
 
 function roleKey(name: string) {
@@ -40,17 +46,6 @@ async function uniqueRoleKey(tenantId: string, name: string) {
   return key;
 }
 
-function selectedPermissions(formData: FormData) {
-  return [
-    ...new Set(
-      formData
-        .getAll("permissions")
-        .map(String)
-        .filter((p) => TENANT_PERMISSION_KEYS.includes(p)),
-    ),
-  ];
-}
-
 // ─────────────────────────────── Tenant roles ───────────────────────────────
 
 export async function createTenantRoleAction(_prev: FormState, formData: FormData): Promise<FormState> {
@@ -59,40 +54,50 @@ export async function createTenantRoleAction(_prev: FormState, formData: FormDat
   const ctx = auth.ctx;
   const parsed = roleSchema.safeParse({
     name: formData.get("name"),
-    description: formData.get("description"),
+    description: formData.get("description") ?? "",
   });
   if (!parsed.success) return fieldErrors(parsed.error);
 
-  const permissions = selectedPermissions(formData);
-  if (permissions.length === 0) return { error: "Choose at least one permission for the new role." };
+  const rawPermissions = formData.getAll("permissions").map(String);
+  const isOwner = isVerifiedInstituteOwner(ctx) || isVerifiedPlatformOwner(ctx.user);
+  const validation = validateRolePermissions(rawPermissions, "TENANT", isOwner);
+  if (!validation.ok) return { error: validation.error };
+  const permissions = validation.validatedKeys;
 
-  const key = await uniqueRoleKey(ctx.tenant.id, parsed.data.name);
-  const role = await db.role.create({
-    data: {
-      scope: "TENANT",
-      tenantId: ctx.tenant.id,
-      key,
-      name: parsed.data.name,
-      description: parsed.data.description || null,
-      isSystem: false,
-      permissions: {
-        createMany: { data: permissions.map((permissionKey) => ({ permissionKey })) },
+  try {
+    await ensurePermissionsInDb(permissions, "TENANT");
+
+    const key = await uniqueRoleKey(ctx.tenant.id, parsed.data.name);
+    const role = await db.role.create({
+      data: {
+        scope: "TENANT",
+        tenantId: ctx.tenant.id,
+        key,
+        name: parsed.data.name,
+        description: parsed.data.description || null,
+        isSystem: false,
+        permissions: {
+          createMany: { data: permissions.map((permissionKey) => ({ permissionKey })) },
+        },
       },
-    },
-  });
+    });
 
-  await writeAudit({
-    tenantId: ctx.tenant.id,
-    actorId: ctx.user.id,
-    actorName: ctx.user.name,
-    action: "role.create",
-    entity: "Role",
-    entityId: role.id,
-    meta: { key: role.key, permissions: permissions.length },
-  });
+    await writeAudit({
+      tenantId: ctx.tenant.id,
+      actorId: ctx.user.id,
+      actorName: ctx.user.name,
+      action: "role.create",
+      entity: "Role",
+      entityId: role.id,
+      meta: { key: role.key, permissions: permissions.length },
+    });
 
-  revalidatePath("/app/roles");
-  return { success: `${role.name} created with ${permissions.length} permissions. Assign it to staff from the Staff page.` };
+    revalidatePath("/app/roles");
+    return { success: `${role.name} created with ${permissions.length} permissions. Assign it to staff from the Staff page.` };
+  } catch (err) {
+    console.error("[createTenantRoleAction] Failed to create role:", err);
+    return { error: "Failed to create role. Please try again." };
+  }
 }
 
 export async function saveTenantRoleAction(_prev: FormState, formData: FormData): Promise<FormState> {
@@ -102,7 +107,7 @@ export async function saveTenantRoleAction(_prev: FormState, formData: FormData)
   const roleId = String(formData.get("roleId") ?? "");
   const parsed = roleSchema.safeParse({
     name: formData.get("name"),
-    description: formData.get("description"),
+    description: formData.get("description") ?? "",
   });
   if (!parsed.success) return fieldErrors(parsed.error);
 
@@ -114,30 +119,41 @@ export async function saveTenantRoleAction(_prev: FormState, formData: FormData)
     return { error: "The Institute Admin role always has full access and cannot be edited." };
   }
 
-  const permissions = selectedPermissions(formData);
+  const rawPermissions = formData.getAll("permissions").map(String);
+  const isOwner = isVerifiedInstituteOwner(ctx) || isVerifiedPlatformOwner(ctx.user);
+  const validation = validateRolePermissions(rawPermissions, "TENANT", isOwner);
+  if (!validation.ok) return { error: validation.error };
+  const permissions = validation.validatedKeys;
 
-  await db.$transaction([
-    db.role.update({
-      where: { id: role.id },
-      data: { name: parsed.data.name, description: parsed.data.description || null },
-    }),
-    db.rolePermission.deleteMany({ where: { roleId: role.id } }),
-    db.rolePermission.createMany({
-      data: permissions.map((permissionKey) => ({ roleId: role.id, permissionKey })),
-    }),
-    db.auditLog.create({
-      data: {
-        tenantId: ctx.tenant.id,
-        actorId: ctx.user.id,
-        actorType: "TENANT",
-        actorName: ctx.user.name,
-        action: "role.update",
-        entity: "Role",
-        entityId: role.id,
-        meta: { permissions: permissions.length, key: role.key },
-      },
-    }),
-  ]);
+  try {
+    await ensurePermissionsInDb(permissions, "TENANT");
+
+    await db.$transaction([
+      db.role.update({
+        where: { id: role.id },
+        data: { name: parsed.data.name, description: parsed.data.description || null },
+      }),
+      db.rolePermission.deleteMany({ where: { roleId: role.id } }),
+      db.rolePermission.createMany({
+        data: permissions.map((permissionKey) => ({ roleId: role.id, permissionKey })),
+      }),
+      db.auditLog.create({
+        data: {
+          tenantId: ctx.tenant.id,
+          actorId: ctx.user.id,
+          actorType: "TENANT",
+          actorName: ctx.user.name,
+          action: "role.update",
+          entity: "Role",
+          entityId: role.id,
+          meta: { permissions: permissions.length, key: role.key },
+        },
+      }),
+    ]);
+  } catch (err) {
+    console.error("[saveTenantRoleAction] Failed to update role permissions:", err);
+    return { error: "Failed to update role permissions. Please try again." };
+  }
 
   revalidatePath("/app/roles");
   revalidatePath("/app/staff");
@@ -219,6 +235,31 @@ export async function saveInstitutionSettingsAction(_prev: FormState, formData: 
       },
     },
   });
+
+  if (academicYear) {
+    try {
+      await db.academicYear.upsert({
+        where: {
+          tenantId_name: {
+            tenantId: ctx.tenant.id,
+            name: academicYear,
+          },
+        },
+        create: {
+          tenantId: ctx.tenant.id,
+          name: academicYear,
+          startDate: new Date("2026-04-01T00:00:00.000Z"),
+          endDate: new Date("2027-03-31T23:59:59.999Z"),
+          isActive: true,
+        },
+        update: {
+          isActive: true,
+        },
+      });
+    } catch {
+      // Ignore conflict
+    }
+  }
 
   await writeAudit({
     tenantId: ctx.tenant.id,

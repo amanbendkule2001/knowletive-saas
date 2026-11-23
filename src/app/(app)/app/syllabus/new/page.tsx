@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { requireTenantPermission } from "@/lib/rbac";
 import { PageHeader } from "@/components/ui/primitives";
 import { createSyllabusAction } from "@/actions/syllabus";
+import { getOrProvisionAcademicYears } from "@/lib/academic-years";
 
 export const metadata = { title: "Create Syllabus — SyllabusTrack" };
 
@@ -11,10 +12,7 @@ export default async function NewSyllabusPage() {
   const ctx = await requireTenantPermission("tenant.syllabus.write");
 
   const [academicYears, subjects, classes, batches, teachers] = await Promise.all([
-    db.academicYear.findMany({
-      where: { tenantId: ctx.tenant.id },
-      orderBy: { startDate: "desc" },
-    }),
+    getOrProvisionAcademicYears(ctx.tenant.id),
     db.subject.findMany({
       where: { tenantId: ctx.tenant.id },
       orderBy: { name: "asc" },

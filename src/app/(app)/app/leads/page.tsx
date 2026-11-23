@@ -27,6 +27,7 @@ import {
   Tone,
 } from "@/components/ui/primitives";
 import { DataTable, type Column } from "@/components/ui/data-table";
+import { resolveUserBranchScope } from "@/lib/branch";
 import { date, num } from "@/lib/format";
 import type { Prisma, LeadStatus } from "@prisma/client";
 
@@ -81,8 +82,14 @@ export default async function LeadsPage({
   const page = Math.max(1, Number(sp.page ?? "1") || 1);
   const tenantId = ctx.tenant.id;
 
+  const branchScope = await resolveUserBranchScope(ctx);
+  const branchFilter: Prisma.LeadWhereInput = branchScope.isBranchScoped
+    ? { branchId: { in: branchScope.allowedBranchIds } }
+    : {};
+
   const where: Prisma.LeadWhereInput = {
     tenantId,
+    ...branchFilter,
     ...(statusFilter ? { status: statusFilter } : {}),
     ...(q
       ? {
@@ -112,12 +119,13 @@ export default async function LeadsPage({
     db.lead.count({ where }),
     db.lead.groupBy({
       by: ["status"],
-      where: { tenantId },
+      where: { tenantId, ...branchFilter },
       _count: { _all: true },
     }),
     db.lead.findMany({
       where: {
         tenantId,
+        ...branchFilter,
         status: { in: ["NEW", "CONTACTED", "FOLLOW_UP", "INTERESTED"] },
         nextFollowUp: { not: null },
       },

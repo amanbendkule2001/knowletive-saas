@@ -14,6 +14,7 @@ import {
 import { db } from "@/lib/db";
 import { requireTenantPermission } from "@/lib/rbac";
 import { hasTenantPermission, isStaffMember } from "@/lib/auth";
+import { resolveUserBranchScope } from "@/lib/branch";
 import {
   deleteLeadAction,
   updateLeadAction,
@@ -84,6 +85,13 @@ export default async function LeadDetailPage({
   });
 
   if (!lead) notFound();
+
+  const branchScope = await resolveUserBranchScope(ctx);
+  if (branchScope.isBranchScoped) {
+    if (!lead.branchId || !branchScope.allowedBranchIds.includes(lead.branchId)) {
+      notFound();
+    }
+  }
 
   const canWrite = hasTenantPermission(ctx, "tenant.leads.write");
   const canConvert = hasTenantPermission(ctx, "tenant.leads.convert");

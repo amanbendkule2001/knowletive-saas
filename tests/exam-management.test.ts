@@ -1032,6 +1032,11 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
         const initialSnapshotCount = await db.examResultSnapshot.count({
           where: { resultId: result.id },
         });
+        const maxVersionAgg = await db.examResultSnapshot.aggregate({
+          where: { resultId: result.id },
+          _max: { version: true },
+        });
+        const nextVersion = (maxVersionAgg._max.version ?? 1) + 1;
 
         // Add a new snapshot version
         const newPayload = {
@@ -1050,7 +1055,7 @@ describe("Stage 4: Enterprise Exam Management System Test Suite", () => {
             examId: exam.id,
             studentId: result.studentId,
             resultId: result.id,
-            version: 2,
+            version: nextVersion,
             snapshotData: newPayload,
             checksum: newChecksum,
           },

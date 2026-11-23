@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { db } from "@/lib/db";
 import { requireTenantPermission } from "@/lib/rbac";
-import { hasTenantPermission, isStaffMember } from "@/lib/auth";
+import { hasTenantPermission, hashPassword, isStaffMember } from "@/lib/auth";
 import {
   Avatar,
   Badge,
@@ -58,6 +58,69 @@ export default async function StudentsPage({
   const classId = sp.classId ?? "";
   const page = Math.max(1, Number(sp.page ?? "1") || 1);
   const tenantId = ctx.tenant.id;
+
+  // Auto-provision user accounts for existing students lacking a login
+  try {
+    const unlinkedStudents = await db.student.findMany({
+      where: { tenantId, userId: null },
+      take: 50,
+    });
+    if (unlinkedStudents.length > 0) {
+      let studentRole = await db.role.findFirst({
+        where: { tenantId, key: "STUDENT" },
+      });
+      if (!studentRole) {
+        studentRole = await db.role.create({
+          data: {
+            tenantId,
+            key: "STUDENT",
+            name: "Student",
+            description: "Student portal: timetable, attendance and notices.",
+            scope: "TENANT",
+            isSystem: true,
+          },
+        });
+      }
+      const defaultPasswordHash = await hashPassword("Admin@123");
+      for (const s of unlinkedStudents) {
+        const cleanAdmissionNo = s.admissionNo.trim();
+        const studentEmail =
+          s.email?.trim().toLowerCase() ||
+          `${cleanAdmissionNo.toLowerCase().replace(/[^a-z0-9._-]/g, "")}@student.${ctx.tenant.slug || "institute"}.com`;
+        let user = await db.user.findUnique({ where: { email: studentEmail } });
+        if (!user) {
+          user = await db.user.create({
+            data: {
+              email: studentEmail,
+              name: `${s.firstName} ${s.lastName}`.trim(),
+              passwordHash: defaultPasswordHash,
+              status: "ACTIVE",
+            },
+          });
+        }
+        const member = await db.membership.findUnique({
+          where: { tenantId_userId: { tenantId, userId: user.id } },
+        });
+        if (!member) {
+          await db.membership.create({
+            data: {
+              tenantId,
+              userId: user.id,
+              roleId: studentRole.id,
+              phone: s.phone || null,
+              status: "ACTIVE",
+            },
+          });
+        }
+        await db.student.update({
+          where: { id: s.id },
+          data: { userId: user.id },
+        });
+      }
+    }
+  } catch {
+    // Non-blocking sync fallback
+  }
 
   const where: Prisma.StudentWhereInput = {
     tenantId,

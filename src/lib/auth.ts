@@ -9,8 +9,11 @@ import { SignJWT, jwtVerify } from "jose";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import {
+  AI_PERMISSION_KEYS,
+  AiPermissionKey,
   PLATFORM_PERMISSION_KEYS,
   STAFF_ROLE_KEYS,
+  TENANT_OPERATIONAL_PERMISSION_KEYS,
   TENANT_PERMISSION_KEYS,
 } from "@/lib/catalog";
 import { addDays } from "@/lib/format";
@@ -21,9 +24,19 @@ export const PENDING_COOKIE = "kl_pending";
 const SESSION_TTL_DAYS = 7;
 const PENDING_TTL_MINUTES = 10;
 
-const pendingSecret = new TextEncoder().encode(
-  process.env.SESSION_SECRET ?? "dev-only-pending-secret-change-before-production",
-);
+function getPendingSecret(): Uint8Array {
+  const secret = process.env.SESSION_SECRET;
+  if (process.env.NODE_ENV === "production") {
+    if (!secret || secret.length < 32 || secret.includes("dev-only")) {
+      throw new Error(
+        "FATAL SECURITY VIOLATION: SESSION_SECRET must be configured with at least 32 cryptographically secure characters in production.",
+      );
+    }
+  }
+  return new TextEncoder().encode(secret ?? "dev-only-pending-secret-change-before-production");
+}
+
+const pendingSecret = getPendingSecret();
 
 export type TenantAccess = {
   tenantId: string;
@@ -35,6 +48,7 @@ export type TenantAccess = {
   roleName: string;
   roleKey: string;
   isOwner: boolean;
+  branchId?: string | null;
   permissions: string[];
 };
 
@@ -59,6 +73,7 @@ export type TenantContext = {
   permissions: Set<string>;
   isOwnerView: boolean;
   subscriptionBlocked: boolean;
+  branchId?: string | null;
 };
 
 // ─────────────────────────────── Passwords ───────────────────────────────
@@ -249,64 +264,69 @@ export async function findPasswordResetToken(token: string) {
  * React `cache`, so layouts, pages and actions share one lookup.
  */
 export const getSession = cache(async (): Promise<AuthUser | null> => {
-  const jar = await cookies();
-  const token = jar.get(SESSION_COOKIE)?.value;
-  if (!token) return null;
+  try {
+    const jar = await cookies();
+    const token = jar.get(SESSION_COOKIE)?.value;
+    if (!token) return null;
 
-  const session = await db.session.findUnique({
-    where: { tokenHash: tokenHash(token) },
-    include: {
-      user: {
-        include: {
-          platformRole: { include: { permissions: true } },
-          memberships: {
-            include: {
-              tenant: { select: { id: true, name: true, slug: true, status: true, type: true } },
-              role: { include: { permissions: true } },
+    const session = await db.session.findUnique({
+      where: { tokenHash: tokenHash(token) },
+      include: {
+        user: {
+          include: {
+            platformRole: { include: { permissions: true } },
+            memberships: {
+              include: {
+                tenant: { select: { id: true, name: true, slug: true, status: true, type: true } },
+                role: { include: { permissions: true } },
+              },
             },
           },
         },
       },
-    },
-  });
-
-  if (!session || session.revokedAt || session.expiresAt <= new Date()) return null;
-  if (session.user.status !== "ACTIVE") return null;
-
-  const u = session.user;
-  const platformPermissions = u.isPlatformOwner
-    ? PLATFORM_PERMISSION_KEYS
-    : (u.platformRole?.permissions.map((p) => p.permissionKey) ?? []);
-
-  const memberships: TenantAccess[] = u.memberships
-    .filter((m) => m.status === "ACTIVE" && m.tenant.status !== "CHURNED")
-    .map((m) => {
-      const permissions = new Set(m.role.permissions.map((p) => p.permissionKey));
-      for (const extra of m.extraPermissions) permissions.add(extra);
-      for (const denied of m.denyPermissions) permissions.delete(denied);
-      return {
-        tenantId: m.tenantId,
-        tenantName: m.tenant.name,
-        tenantSlug: m.tenant.slug,
-        tenantStatus: m.tenant.status,
-        tenantType: m.tenant.type,
-        roleId: m.roleId,
-        roleName: m.role.name,
-        roleKey: m.role.key,
-        isOwner: m.isOwner,
-        permissions: [...permissions],
-      };
     });
 
-  return {
-    id: u.id,
-    name: u.name,
-    email: u.email,
-    avatarColor: u.avatarColor,
-    isPlatformOwner: u.isPlatformOwner,
-    platformPermissions,
-    memberships,
-  };
+    if (!session || session.revokedAt || session.expiresAt <= new Date()) return null;
+    if (session.user.status !== "ACTIVE") return null;
+
+    const u = session.user;
+    const platformPermissions = u.isPlatformOwner
+      ? PLATFORM_PERMISSION_KEYS
+      : (u.platformRole?.permissions.map((p) => p.permissionKey) ?? []);
+
+    const memberships: TenantAccess[] = u.memberships
+      .filter((m) => m.status === "ACTIVE" && m.tenant.status !== "CHURNED")
+      .map((m) => {
+        const permissions = new Set(m.role.permissions.map((p) => p.permissionKey));
+        for (const extra of m.extraPermissions) permissions.add(extra);
+        for (const denied of m.denyPermissions) permissions.delete(denied);
+        return {
+          tenantId: m.tenantId,
+          tenantName: m.tenant.name,
+          tenantSlug: m.tenant.slug,
+          tenantStatus: m.tenant.status,
+          tenantType: m.tenant.type,
+          roleId: m.roleId,
+          roleName: m.role.name,
+          roleKey: m.role.key,
+          isOwner: m.isOwner,
+          branchId: m.branchId ?? null,
+          permissions: [...permissions],
+        };
+      });
+
+    return {
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      avatarColor: u.avatarColor,
+      isPlatformOwner: u.isPlatformOwner,
+      platformPermissions,
+      memberships,
+    };
+  } catch {
+    return null;
+  }
 });
 
 export async function requireUser() {
@@ -334,72 +354,84 @@ export function hasPlatformPermission(user: AuthUser, permission: string) {
 
 /** Resolves the institute the user is currently working in. */
 export const getTenantContext = cache(async (): Promise<TenantContext | null> => {
-  const user = await getSession();
-  if (!user) return null;
+  try {
+    const user = await getSession();
+    if (!user) return null;
 
-  const jar = await cookies();
-  const selectedId = jar.get(TENANT_COOKIE)?.value;
+    const jar = await cookies();
+    const selectedId = jar.get(TENANT_COOKIE)?.value;
 
-  let access = user.memberships.find((m) => m.tenantId === selectedId);
+    let access = user.memberships.find((m) => m.tenantId === selectedId);
 
-  if (!access && !user.isPlatformOwner) {
-    if (user.memberships.length === 1) {
-      access = user.memberships[0];
+    if (!access && !user.isPlatformOwner) {
+      if (user.memberships.length === 1) {
+        access = user.memberships[0];
+      }
     }
-  }
 
-  let tenant: TenantWithPlan | null = null;
+    let tenant: TenantWithPlan | null = null;
 
-  if (access) {
-    tenant = await db.tenant.findUnique({
-      where: { id: access.tenantId },
-      include: { subscription: { include: { plan: true } } },
-    });
-  } else if (selectedId && user.isPlatformOwner) {
-    // Support access: platform owner can open any institute workspace.
-    tenant = await db.tenant.findUnique({
-      where: { id: selectedId },
-      include: { subscription: { include: { plan: true } } },
-    });
-    if (tenant && tenant.status !== "CHURNED") {
-      access = {
-        tenantId: tenant.id,
-        tenantName: tenant.name,
-        tenantSlug: tenant.slug,
-        tenantStatus: tenant.status,
-        tenantType: tenant.type,
-        roleId: null,
-        roleName: "Platform Owner",
-        roleKey: "PLATFORM_OWNER",
-        isOwner: true,
-        permissions: TENANT_PERMISSION_KEYS,
-      };
+    if (access) {
+      tenant = await db.tenant.findUnique({
+        where: { id: access.tenantId },
+        include: { subscription: { include: { plan: true } } },
+      });
+    } else if (selectedId && user.isPlatformOwner) {
+      // Support access: platform owner can open any institute workspace.
+      tenant = await db.tenant.findUnique({
+        where: { id: selectedId },
+        include: { subscription: { include: { plan: true } } },
+      });
+      if (tenant && tenant.status !== "CHURNED") {
+        access = {
+          tenantId: tenant.id,
+          tenantName: tenant.name,
+          tenantSlug: tenant.slug,
+          tenantStatus: tenant.status,
+          tenantType: tenant.type,
+          roleId: null,
+          roleName: "Platform Support View",
+          roleKey: "PLATFORM_SUPPORT",
+          isOwner: false, // Security: Support impersonation session is NOT an actual institute owner
+          branchId: null,
+          permissions: TENANT_OPERATIONAL_PERMISSION_KEYS,
+        };
+      }
     }
+
+    if (!tenant || !access) return null;
+    if (tenant.status === "SUSPENDED" && !user.isPlatformOwner) {
+      // Suspended institutes can still see the read-only billing ground truth.
+      // Write access is blocked by requireTenantPermission.
+    }
+
+    const subscriptionBlocked =
+      !!tenant.subscription &&
+      ["PAST_DUE", "PAUSED", "EXPIRED", "CANCELED"].includes(tenant.subscription.status);
+
+    return {
+      user,
+      tenant,
+      membership: access,
+      permissions: new Set(access.permissions),
+      isOwnerView: user.isPlatformOwner,
+      subscriptionBlocked,
+      branchId: access.branchId ?? null,
+    };
+  } catch {
+    return null;
   }
-
-  if (!tenant || !access) return null;
-  if (tenant.status === "SUSPENDED" && !user.isPlatformOwner) {
-    // Suspended institutes can still see the read-only billing ground truth.
-    // Write access is blocked by requireTenantPermission.
-  }
-
-  const subscriptionBlocked =
-    !!tenant.subscription &&
-    ["PAST_DUE", "PAUSED", "EXPIRED", "CANCELED"].includes(tenant.subscription.status);
-
-  return {
-    user,
-    tenant,
-    membership: access,
-    permissions: new Set(access.permissions),
-    isOwnerView: user.isPlatformOwner,
-    subscriptionBlocked,
-  };
 });
 
 export function hasTenantPermission(ctx: TenantContext, permission: string) {
-  if (ctx.isOwnerView) return true;
-  return ctx.permissions.has(permission);
+  // Support impersonation grants operational permissions, but NEVER privileged AI access
+  if (ctx.isOwnerView) {
+    if (AI_PERMISSION_KEYS.includes(permission as AiPermissionKey)) {
+      return false; // Support users must not gain AI access merely through support impersonation
+    }
+    return true;
+  }
+  return Boolean(ctx.permissions?.has(permission));
 }
 
 export function isStaffMember(ctx: TenantContext): boolean {

@@ -11,11 +11,18 @@ export const metadata = { title: "Add student" };
 
 export default async function NewStudentPage() {
   const ctx = await requireTenantWrite("tenant.students.write");
-  const classes = await db.classLevel.findMany({
-    where: { tenantId: ctx.tenant.id },
-    include: { sections: { orderBy: { name: "asc" } } },
-    orderBy: { order: "asc" },
-  });
+  const [classes, branches] = await Promise.all([
+    db.classLevel.findMany({
+      where: { tenantId: ctx.tenant.id },
+      include: { sections: { orderBy: { name: "asc" } } },
+      orderBy: { order: "asc" },
+    }),
+    db.branch.findMany({
+      where: { tenantId: ctx.tenant.id, isActive: true },
+      select: { id: true, name: true, code: true, branchType: true },
+      orderBy: [{ branchType: "asc" }, { name: "asc" }],
+    }),
+  ]);
 
   return (
     <div className="space-y-5">
@@ -48,7 +55,7 @@ export default async function NewStudentPage() {
             pendingLabel="Creating…"
             cancelHref="/app/students"
           >
-            <StudentFields classes={classes} mode="create" />
+            <StudentFields classes={classes} branches={branches} mode="create" />
           </ActionForm>
         </div>
       </Card>

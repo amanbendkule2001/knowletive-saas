@@ -16,7 +16,7 @@ export function fieldErrors(error: z.ZodError): FormState {
 }
 
 export const loginSchema = z.object({
-  email: z.string().trim().toLowerCase().email("Enter a valid email"),
+  email: z.string().trim().toLowerCase().min(1, "Email or login ID is required"),
   password: z.string().min(1, "Password is required"),
 });
 

@@ -13,6 +13,7 @@
     "db:down": "docker compose down",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
+    "db:sync-permissions": "tsx scripts/sync-permissions.ts",
     "db:studio": "prisma studio",
     "setup": "prisma generate && prisma db push && tsx prisma/seed.ts"
   },

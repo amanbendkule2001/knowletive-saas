@@ -46,7 +46,8 @@ export default async function PublicPayPage({
 
   if (!link) notFound();
 
-  const isExpired = link.expiresAt < new Date() && link.status !== "PAID";
+  const isCanceled = link.status === "CANCELED";
+  const isExpired = (link.status === "EXPIRED" || link.expiresAt < new Date()) && link.status !== "PAID";
   const student = link.feeInvoice.student;
   const studentName = `${student.firstName} ${student.lastName}`;
   const className = student.section?.class?.name ?? "Class";
@@ -122,6 +123,10 @@ export default async function PublicPayPage({
               </p>
             )}
           </Card>
+        ) : isCanceled ? (
+          <Callout tone="danger" title="Payment Link Canceled">
+            This payment link has been canceled because the invoice balance was updated, paid, or waived. Please contact the school accounts department if you require a new link.
+          </Callout>
         ) : isExpired ? (
           <Callout tone="danger" title="Payment Link Expired">
             This payment link expired on {date(link.expiresAt)}. Please contact the school accounts department to issue a new payment link.

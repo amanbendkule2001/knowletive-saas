@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/primitives";
 import { num } from "@/lib/format";
 import type { BatchStatus, Prisma } from "@prisma/client";
+import { getOrProvisionAcademicYears } from "@/lib/academic-years";
 
 export const metadata = { title: "Batch Management" };
 
@@ -139,11 +140,7 @@ export default async function BatchesPage({
       where: { ...statsWhere, status: "ACTIVE" },
       _sum: { capacity: true },
     }),
-    db.academicYear.findMany({
-      where: { tenantId: ctx.tenant.id },
-      select: { id: true, name: true },
-      orderBy: { startDate: "desc" },
-    }),
+    getOrProvisionAcademicYears(ctx.tenant.id),
     db.subject.findMany({
       where: { tenantId: ctx.tenant.id },
       select: { id: true, name: true },

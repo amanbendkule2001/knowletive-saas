@@ -10,6 +10,8 @@ import {
   Image as ImageIcon,
   Upload,
   Trash2,
+  Bot,
+  Sparkles,
 } from "lucide-react";
 import { db } from "@/lib/db";
 import { requireTenantPermission } from "@/lib/rbac";
@@ -446,6 +448,26 @@ export default async function TenantSettingsPage() {
         </div>
 
         <div className="space-y-4">
+          <Card>
+            <CardHeader
+              title="AI & Copilot Access"
+              description="Govern conversational Copilot and granular AI capabilities."
+              action={<Bot className="size-4 text-[var(--muted)]" />}
+            />
+            <div className="p-4 space-y-3">
+              <p className="text-xs text-[var(--muted)] leading-relaxed">
+                Grant or revoke conversational AI Copilot permissions and granular analytics capabilities across staff, teachers, students, and parents.
+              </p>
+              <Link
+                href="/app/settings/ai"
+                className="inline-flex items-center justify-center w-full px-4 py-2 rounded-lg bg-[var(--brand)] text-white text-xs font-medium hover:opacity-90 transition-opacity gap-1.5 shadow-sm"
+              >
+                <Sparkles className="size-3.5" />
+                Manage AI Permissions
+              </Link>
+            </div>
+          </Card>
+
           <Card>
             <CardHeader
               title="Institute logo"

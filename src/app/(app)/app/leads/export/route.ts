@@ -1,5 +1,6 @@
 import { getTenantContext, hasTenantPermission, isStaffMember } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { resolveUserBranchScope } from "@/lib/branch";
 import {
   buildLeadsWhereClause,
   leadsExportSelect,
@@ -25,7 +26,11 @@ export async function GET(request: Request) {
   const q = searchParams.get("q") ?? undefined;
   const status = searchParams.get("status") ?? undefined;
 
-  const where = buildLeadsWhereClause(ctx.tenant.id, { q, status });
+  // Enforce branch scope isolation for lead exports
+  const branchScope = await resolveUserBranchScope(ctx);
+  const allowedBranchIds = branchScope.isBranchScoped ? branchScope.allowedBranchIds : undefined;
+
+  const where = buildLeadsWhereClause(ctx.tenant.id, { q, status }, allowedBranchIds);
 
   // Scalability check: Enforce bounded export limit before querying data
   const totalMatching = await db.lead.count({ where });

@@ -9,6 +9,8 @@ import { Shell } from "@/components/shell/shell";
 import { Logo } from "@/components/ui/logo";
 import { Callout } from "@/components/ui/primitives";
 import { logoutAction } from "@/actions/auth";
+import { evaluateAiPermission } from "@/lib/ai-permissions";
+import { CopilotWidget } from "@/components/ai-copilot/CopilotWidget";
 
 export const metadata = { title: "Workspace" };
 
@@ -108,6 +110,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const tenantSettings = (tenant.settings as Record<string, unknown> | null) ?? {};
   const logoFileId = typeof tenantSettings.logoFileId === "string" ? tenantSettings.logoFileId : null;
+  const copilotAccess = evaluateAiPermission(ctx, "tenant.ai.copilot");
 
   return (
     <Shell
@@ -173,6 +176,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </div>
       )}
       {children}
+      <CopilotWidget
+        hasAccess={copilotAccess.ok}
+        tenantName={tenant.name}
+        roleKey={ctx.membership?.roleKey}
+        canViewFees={hasTenantPermission(ctx, "tenant.fees.read")}
+      />
     </Shell>
   );
 }

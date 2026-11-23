@@ -22,16 +22,26 @@ type StudentDefaults = {
   address?: string | null;
   classId?: string | null;
   sectionId?: string | null;
+  branchId?: string | null;
   status?: string;
+};
+
+type BranchOption = {
+  id: string;
+  name: string;
+  code: string;
+  branchType: string;
 };
 
 export function StudentFields({
   classes,
+  branches,
   student,
   mode,
   errors,
 }: {
   classes: ClassOption[];
+  branches?: BranchOption[];
   student?: StudentDefaults | null;
   mode: "create" | "edit";
   errors?: FormState["fieldErrors"];
@@ -165,6 +175,28 @@ export function StudentFields({
             ))}
           </select>
         </Field>
+        {branches && branches.length > 0 && (
+          <Field
+            label="Campus / Branch"
+            htmlFor="branchId"
+            error={errors?.branchId}
+            hint="Multi-branch fee accounting & settlement attribution."
+          >
+            <select
+              id="branchId"
+              name="branchId"
+              className="select"
+              defaultValue={student?.branchId ?? ""}
+            >
+              <option value="">Unassigned (Main Institute)</option>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name} [{b.code}] {b.branchType === "MAIN" ? "— Main" : "— Sub-Branch"}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         {mode === "edit" && (
           <Field label="Status" htmlFor="status" error={errors?.status}>
             <select id="status" name="status" className="select" defaultValue={student?.status ?? "ACTIVE"}>

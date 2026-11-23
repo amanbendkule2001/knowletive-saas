@@ -77,6 +77,7 @@ export const leadsExportSelect = {
 export function buildLeadsWhereClause(
   tenantId: string,
   filters?: { status?: string; q?: string },
+  allowedBranchIds?: string[],
 ): Prisma.LeadWhereInput {
   const q = (filters?.q ?? "").trim();
   const rawStatus = (filters?.status ?? "").trim().toUpperCase();
@@ -86,6 +87,9 @@ export function buildLeadsWhereClause(
 
   return {
     tenantId,
+    ...(allowedBranchIds !== undefined
+      ? { branchId: { in: allowedBranchIds } }
+      : {}),
     ...(statusFilter ? { status: statusFilter } : {}),
     ...(q
       ? {

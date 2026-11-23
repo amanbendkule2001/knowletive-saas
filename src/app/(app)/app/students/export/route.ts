@@ -1,6 +1,7 @@
 import { getTenantContext, hasTenantPermission, isStaffMember } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { escapeCsvCell } from "@/lib/csv";
+import { resolveUserBranchScope, buildBranchFilter } from "@/lib/branch";
 
 export async function GET() {
   const ctx = await getTenantContext();
@@ -14,8 +15,11 @@ export async function GET() {
     );
   }
 
+  const branchScope = await resolveUserBranchScope(ctx);
+  const branchFilter = branchScope.isBranchScoped ? buildBranchFilter(branchScope.allowedBranchIds) : {};
+
   const students = await db.student.findMany({
-    where: { tenantId: ctx.tenant.id, status: { not: "ALUMNI" } },
+    where: { tenantId: ctx.tenant.id, status: { not: "ALUMNI" }, ...branchFilter },
     include: {
       section: { include: { class: true } },
       guardians: { include: { guardian: true }, orderBy: { isPrimary: "desc" } },

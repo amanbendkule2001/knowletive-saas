@@ -1,0 +1,507 @@
+[
+  {
+    "name": "fn_assert_allocation_reversal_invariant",
+    "attachedTables": [
+      "PaymentAllocationReversal"
+    ],
+    "triggers": [
+      "AFTER INSERT ON PaymentAllocationReversal"
+    ],
+    "unqualifiedTables": [
+      "PaymentAllocation",
+      "PaymentAllocationReversal"
+    ],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [
+      "PaymentAllocation"
+    ],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": true,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_enforce_allocation_reversal_limit",
+    "attachedTables": [
+      "PaymentAllocationReversal"
+    ],
+    "triggers": [
+      "BEFORE INSERT ON PaymentAllocationReversal"
+    ],
+    "unqualifiedTables": [
+      "PaymentAllocation",
+      "PaymentAllocationReversal"
+    ],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [
+      "PaymentAllocation"
+    ],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": true,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_enforce_allocation_same_student",
+    "attachedTables": [
+      "PaymentAllocation"
+    ],
+    "triggers": [
+      "BEFORE INSERT OR UPDATE ON PaymentAllocation"
+    ],
+    "unqualifiedTables": [
+      "CreditTransferJournal",
+      "CreditTransferPosting",
+      "CreditTransferSourceAllocation",
+      "FeeInvoice",
+      "PaymentReceipt"
+    ],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [
+      "CreditTransferJournal",
+      "CreditTransferPosting",
+      "CreditTransferSourceAllocation",
+      "FeeInvoice",
+      "PaymentReceipt"
+    ],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": true,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_enforce_branch_payout_lifecycle",
+    "attachedTables": [
+      "BranchPayout"
+    ],
+    "triggers": [
+      "BEFORE UPDATE ON BranchPayout"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_enforce_credit_transfer_balanced",
+    "attachedTables": [
+      "CreditTransferJournal",
+      "CreditTransferPosting",
+      "CreditTransferSourceAllocation"
+    ],
+    "triggers": [
+      "AFTER INSERT OR UPDATE ON CreditTransferJournal",
+      "AFTER INSERT OR UPDATE ON CreditTransferPosting",
+      "AFTER INSERT OR UPDATE ON CreditTransferSourceAllocation"
+    ],
+    "unqualifiedTables": [
+      "CreditTransferJournal",
+      "CreditTransferPosting",
+      "CreditTransferSourceAllocation"
+    ],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": true,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_enforce_receipt_balance_conservation",
+    "attachedTables": [
+      "PaymentReceipt",
+      "PaymentReceiptBalance"
+    ],
+    "triggers": [
+      "AFTER INSERT OR UPDATE ON PaymentReceipt",
+      "AFTER INSERT OR UPDATE ON PaymentReceiptBalance"
+    ],
+    "unqualifiedTables": [
+      "PaymentReceipt",
+      "PaymentReceiptBalance"
+    ],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": true,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_enforce_transfer_posting_provenance",
+    "attachedTables": [
+      "CreditTransferPosting"
+    ],
+    "triggers": [
+      "BEFORE INSERT ON CreditTransferPosting"
+    ],
+    "unqualifiedTables": [
+      "CreditTransferJournal",
+      "CreditTransferSourceAllocation"
+    ],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [
+      "CreditTransferJournal",
+      "CreditTransferSourceAllocation"
+    ],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": true,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_enforce_transfer_request_lifecycle",
+    "attachedTables": [
+      "CreditTransferRequest"
+    ],
+    "triggers": [
+      "BEFORE UPDATE ON CreditTransferRequest"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_approval_event_immutability",
+    "attachedTables": [
+      "CreditTransferApprovalEvent"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON CreditTransferApprovalEvent",
+      "BEFORE OTHER ON CreditTransferApprovalEvent"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_branch_ledger_immutability",
+    "attachedTables": [
+      "BranchLedgerEntry"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON BranchLedgerEntry",
+      "BEFORE OTHER ON BranchLedgerEntry"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_credit_account_deletion",
+    "attachedTables": [
+      "StudentCreditAccount"
+    ],
+    "triggers": [
+      "BEFORE DELETE ON StudentCreditAccount"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_credit_account_identity",
+    "attachedTables": [
+      "StudentCreditAccount"
+    ],
+    "triggers": [
+      "BEFORE UPDATE ON StudentCreditAccount"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_credit_transfer_immutability",
+    "attachedTables": [
+      "CreditTransferJournal"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON CreditTransferJournal",
+      "BEFORE OTHER ON CreditTransferJournal"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_exam_revision_event_immutability",
+    "attachedTables": [
+      "ExamMarksRevisionEvent"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON ExamMarksRevisionEvent"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_exam_revision_truncate",
+    "attachedTables": [
+      "ExamMarksRevisionEvent"
+    ],
+    "triggers": [
+      "BEFORE OTHER ON ExamMarksRevisionEvent"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_exam_snapshot_immutability",
+    "attachedTables": [
+      "ExamResultSnapshot"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON ExamResultSnapshot"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_exam_snapshot_truncate",
+    "attachedTables": [
+      "ExamResultSnapshot"
+    ],
+    "triggers": [
+      "BEFORE OTHER ON ExamResultSnapshot"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_guardian_consent_event_immutability",
+    "attachedTables": [
+      "GuardianConsentEvent"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON GuardianConsentEvent",
+      "BEFORE OTHER ON GuardianConsentEvent"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_invoice_student_reassignment",
+    "attachedTables": [
+      "FeeInvoice"
+    ],
+    "triggers": [
+      "BEFORE UPDATE ON FeeInvoice"
+    ],
+    "unqualifiedTables": [
+      "PaymentAllocation"
+    ],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [
+      "PaymentAllocation"
+    ],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": true,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_payment_allocation_immutability",
+    "attachedTables": [
+      "PaymentAllocation"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON PaymentAllocation",
+      "BEFORE OTHER ON PaymentAllocation"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_payment_receipt_immutability",
+    "attachedTables": [
+      "PaymentReceipt"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON PaymentReceipt",
+      "BEFORE OTHER ON PaymentReceipt"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_payment_reversal_immutability",
+    "attachedTables": [
+      "PaymentAllocationReversal"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON PaymentAllocationReversal",
+      "BEFORE OTHER ON PaymentAllocationReversal"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_receipt_balance_identity",
+    "attachedTables": [
+      "PaymentReceiptBalance"
+    ],
+    "triggers": [
+      "BEFORE UPDATE ON PaymentReceiptBalance"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_receipt_balance_immutability",
+    "attachedTables": [
+      "PaymentReceiptBalance"
+    ],
+    "triggers": [
+      "BEFORE DELETE ON PaymentReceiptBalance",
+      "BEFORE OTHER ON PaymentReceiptBalance"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_source_allocation_immutability",
+    "attachedTables": [
+      "CreditTransferSourceAllocation"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON CreditTransferSourceAllocation",
+      "BEFORE OTHER ON CreditTransferSourceAllocation"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "fn_protect_transfer_posting_immutability",
+    "attachedTables": [
+      "CreditTransferPosting"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON CreditTransferPosting",
+      "BEFORE OTHER ON CreditTransferPosting"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "prevent_batch_event_tampering",
+    "attachedTables": [
+      "BatchEnrollmentEvent"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON BatchEnrollmentEvent",
+      "BEFORE OTHER ON BatchEnrollmentEvent"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  },
+  {
+    "name": "trg_syllabustrack_event_immutability",
+    "attachedTables": [
+      "SyllabusProgressEvent"
+    ],
+    "triggers": [
+      "BEFORE UPDATE OR DELETE ON SyllabusProgressEvent",
+      "BEFORE OTHER ON SyllabusProgressEvent"
+    ],
+    "unqualifiedTables": [],
+    "qualifiedTables": [],
+    "crossTableUnqualified": [],
+    "crossTableQualified": [],
+    "isVulnerableToShadowing": false,
+    "hasSearchPath": false,
+    "hasDynamicSql": false
+  }
+]

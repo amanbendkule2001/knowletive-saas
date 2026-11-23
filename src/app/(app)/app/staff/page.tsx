@@ -40,6 +40,7 @@ export default async function StaffPage({
 
   const where: Prisma.MembershipWhereInput = {
     tenantId,
+    role: { key: { not: "STUDENT" } },
     ...(status ? { status } : {}),
     ...(q
       ? {
@@ -72,7 +73,9 @@ export default async function StaffPage({
   ]);
 
   const canWrite = hasTenantPermission(ctx, "tenant.staff.write");
-  const activeCount = await db.membership.count({ where: { tenantId, status: "ACTIVE" } });
+  const activeCount = await db.membership.count({
+    where: { tenantId, status: "ACTIVE", role: { key: { not: "STUDENT" } } },
+  });
 
   const columns: Column<MembershipRow>[] = [
     {
