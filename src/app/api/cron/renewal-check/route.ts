@@ -79,8 +79,8 @@ async function handleRenewalCheck(request: NextRequest) {
     const daysLeft = Math.max(0, Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
 
     const subject = isTrial
-      ? `[Action Required] Your Knowletive free trial expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`
-      : `[Upcoming Renewal] Knowletive subscription renewal in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`;
+      ? `[Action Required] Your Coachgenie free trial expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`
+      : `[Upcoming Renewal] Coachgenie subscription renewal in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`;
 
     const body = `Hello ${sub.tenant.name} Team,
 
@@ -94,7 +94,7 @@ You can view your active plan and outstanding invoices here:
 If you have already arranged payment with the accounts team, please disregard this notice.
 
 Best regards,
-The Knowletive Platform Team`;
+The Coachgenie Platform Team`;
 
     // Filter admins or owners to receive the alert
     const admins = sub.tenant.memberships.filter((m) => {

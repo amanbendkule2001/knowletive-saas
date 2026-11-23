@@ -6,7 +6,7 @@ import { Card, PageHeader, Progress, StatCard } from "@/components/ui/primitives
 import { num } from "@/lib/format";
 import { getSyllabusDashboardMetrics } from "@/actions/syllabus";
 
-export const metadata = { title: "Syllabus Progress Reports — Knowletive" };
+export const metadata = { title: "Syllabus Progress Reports — Coachgenie" };
 
 export default async function SyllabusReportsPage() {
   const ctx = await requireTenantPermission("tenant.syllabus.view_reports");

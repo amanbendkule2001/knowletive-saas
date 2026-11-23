@@ -92,7 +92,7 @@ export default function LandingPage() {
                 <span className="text-gradient">one platform.</span>
               </h1>
               <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-muted sm:text-base">
-                Knowletive gives platform owners complete control of institutes, roles, students,
+                Coachgenie gives platform owners complete control of institutes, roles, students,
                 parents, subscriptions and AI — while each institute gets a fast, focused workspace
                 of its own.
               </p>
@@ -468,7 +468,7 @@ export default function LandingPage() {
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 sm:flex-row sm:px-6">
           <Logo href="/" size={26} subtitle="Institute OS" />
           <p className="text-[11px] text-muted">
-            © {new Date().getFullYear()} Knowletive. Multi-tenant institute platform.
+            © {new Date().getFullYear()} Coachgenie. Multi-tenant institute platform.
           </p>
           <div className="flex gap-4 text-[11px] text-muted">
             <Link href="/login" className="hover:text-[var(--text)]">Sign in</Link>

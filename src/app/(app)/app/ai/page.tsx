@@ -318,7 +318,7 @@ export default async function AiStudioPage({
 
           {provider === "mock" ? (
             <Callout tone="brand" title="Demo provider active">
-              No AI key is configured, so Knowletive returns deterministic sample drafts. Add{" "}
+              No AI key is configured, so Coachgenie returns deterministic sample drafts. Add{" "}
               <code className="font-mono text-[10px]">AI_PROVIDER</code> and{" "}
               <code className="font-mono text-[10px]">OPENAI_API_KEY</code> to switch to a live model
               without changing this page.

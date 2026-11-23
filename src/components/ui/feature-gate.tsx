@@ -40,7 +40,7 @@ export function FeatureLocked({
             <Link href="/app/billing" className="btn btn-primary">
               <Sparkles className="size-4" /> View plans & upgrade
             </Link>
-            <a href="mailto:support@knowletive.com" className="btn btn-secondary">
+            <a href="mailto:support@coachgenie.in" className="btn btn-secondary">
               Talk to support
             </a>
           </div>

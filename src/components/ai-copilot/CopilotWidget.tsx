@@ -45,7 +45,7 @@ export function CopilotWidget({ hasAccess, tenantName, roleKey, canViewFees }: P
           onClick={() => setIsOpen(true)}
           className="fixed bottom-24 right-0 z-40 group flex items-center gap-2.5 rounded-l-full rounded-r-none bg-[var(--brand)] pl-2.5 pr-4 py-3 text-white shadow-xl hover:shadow-2xl border-y border-l border-white/20 transition-all duration-300 ease-out translate-x-[calc(100%-24px)] hover:translate-x-0 focus-visible:translate-x-0 active:scale-95 cursor-pointer"
           title="Open AI Copilot (Ctrl + J)"
-          aria-label="Open Knowletive AI Copilot"
+          aria-label="Open Coachgenie AI Copilot"
         >
           {/* Edge tab handle / chevron indicator */}
           <div className="flex items-center justify-center text-white/80 group-hover:text-white transition-colors">

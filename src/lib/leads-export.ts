@@ -141,7 +141,7 @@ export function serializeLeadsCsv(leads: LeadExportRecord[]): string {
 
 /** Generates a sanitized export filename incorporating tenant slug and current date. */
 export function generateLeadsFilename(slug: string, exportDate: Date = new Date()): string {
-  const sanitizedSlug = slug.replace(/[^a-z0-9-]/gi, "").toLowerCase() || "knowletive";
+  const sanitizedSlug = slug.replace(/[^a-z0-9-]/gi, "").toLowerCase() || "coachgenie";
   const stamp = exportDate.toISOString().slice(0, 10);
   return `${sanitizedSlug}-leads-${stamp}.csv`;
 }

@@ -41,7 +41,7 @@ export function CopilotMessages({
           </div>
           <div>
             <h3 className="text-sm font-semibold text-[var(--foreground)]">
-              Knowletive AI Copilot
+              Coachgenie AI Copilot
             </h3>
             <p className="text-xs text-[var(--muted)] max-w-xs mt-1">
               {isTeacher

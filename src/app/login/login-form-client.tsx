@@ -95,7 +95,7 @@ export function LoginFormClient({ initialEmail }: { initialEmail: string }) {
             <span className="flex items-center gap-1.5">
               <Lock className="size-3" /> Secured with httpOnly session cookies
             </span>
-            <a href="mailto:support@knowletive.com" className="link">
+            <a href="mailto:support@coachgenie.in" className="link">
               Need help?
             </a>
           </div>

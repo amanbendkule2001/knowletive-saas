@@ -66,7 +66,7 @@ export default async function AiAccessSettingsPage() {
               Institute Owner Access Required
             </h3>
             <p className="text-sm text-[var(--muted)] max-w-md mx-auto">
-              Under Knowletive SaaS security policy, granting and revoking AI Copilot and analytics capabilities is strictly restricted to verified <strong>Institute Owners</strong> and <strong>Platform Owners</strong>.
+              Under Coachgenie SaaS security policy, granting and revoking AI Copilot and analytics capabilities is strictly restricted to verified <strong>Institute Owners</strong> and <strong>Platform Owners</strong>.
             </p>
             <div className="pt-2">
               <Link

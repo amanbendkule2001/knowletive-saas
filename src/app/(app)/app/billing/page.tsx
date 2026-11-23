@@ -331,7 +331,7 @@ export default async function BillingPage({
           <Card>
             <CardHeader
               title="Platform invoices"
-              description="GST invoices for your Knowletive subscription"
+              description="GST invoices for your Coachgenie subscription"
               action={
                 <Badge tone={openInvoices.length ? "warning" : "success"}>
                   {openInvoices.length} open
@@ -412,10 +412,10 @@ export default async function BillingPage({
               {gateway.id === "manual" ? (
                 <>
                   <p>
-                    Manual billing is active. Knowletive raises a GST invoice for each period and
+                    Manual billing is active. Coachgenie raises a GST invoice for each period and
                     your team pays by bank transfer.
                   </p>
-                  <Link href="mailto:support@knowletive.com" className="btn btn-secondary w-full">
+                  <Link href="mailto:support@coachgenie.in" className="btn btn-secondary w-full">
                     Contact accounts <ArrowUpRight className="size-3.5" />
                   </Link>
                   <p className="text-[10px] text-[var(--muted-2)]">

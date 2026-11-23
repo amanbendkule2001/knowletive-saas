@@ -81,7 +81,7 @@ export default async function PortalLayout({ children }: { children: React.React
       </main>
 
       <footer className="border-t border-[var(--border)] py-6 text-center text-xs text-muted">
-        <p>&copy; {new Date().getFullYear()} {ctx.tenant.name} &bull; Powered by Knowletive</p>
+        <p>&copy; {new Date().getFullYear()} {ctx.tenant.name} &bull; Powered by Coachgenie</p>
       </footer>
     </div>
   );

@@ -311,7 +311,7 @@ function SidebarBody({
           </div>
         ) : (
           <div className="rounded-xl bg-[var(--surface-2)] p-3">
-            <p className="text-[11px] font-semibold">Knowletive Platform</p>
+            <p className="text-[11px] font-semibold">Coachgenie Platform</p>
             <p className="mt-0.5 text-[10px] text-muted">Multi-tenant SaaS · v0.1</p>
           </div>
         )}

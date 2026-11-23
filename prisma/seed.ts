@@ -163,7 +163,7 @@ async function reset() {
 }
 
 async function main() {
-  console.log("Seeding Knowletive…");
+  console.log("Seeding Coachgenie…");
   await reset();
 
   // ── Permissions ────────────────────────────────────────────────
@@ -232,6 +232,27 @@ async function main() {
   const passwordHash = await bcrypt.hash("Admin@123", 12);
 
   const owner = await db.user.create({
+    data: {
+      email: "owner@coachgenie.in",
+      name: "Aman Bendkule",
+      passwordHash,
+      isPlatformOwner: true,
+      avatarColor: "#4f46e5",
+      status: "ACTIVE",
+    },
+  });
+  await db.user.create({
+    data: {
+      email: "support@coachgenie.in",
+      name: "Priya Nair",
+      passwordHash,
+      platformRoleId: supportRole.id,
+      avatarColor: "#0d9488",
+      status: "ACTIVE",
+    },
+  });
+  // Maintain backward-compatible legacy login aliases
+  await db.user.create({
     data: {
       email: "owner@knowletive.com",
       name: "Aman Bendkule",
@@ -670,8 +691,8 @@ async function main() {
     data: {
       key: "platform",
       value: {
-        name: "Knowletive",
-        supportEmail: "support@knowletive.com",
+        name: "Coachgenie",
+        supportEmail: "support@coachgenie.in",
         defaultTrialDays: 14,
         billingProvider: "manual",
         aiMode: process.env.AI_PROVIDER ?? "mock",
@@ -680,8 +701,8 @@ async function main() {
   });
 
   console.log("\nSeed complete.\n");
-  console.log("  Platform owner : owner@knowletive.com / Admin@123");
-  console.log("  Platform support: support@knowletive.com / Admin@123");
+  console.log("  Platform owner : owner@coachgenie.in / Admin@123");
+  console.log("  Platform support: support@coachgenie.in / Admin@123");
   console.log("  Institute admin : admin@sunrise.test / Admin@123");
   console.log("  Teacher         : teacher@sunrise.test / Admin@123\n");
 }

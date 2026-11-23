@@ -10,14 +10,14 @@ export const DEMO_ACCOUNTS: DemoAccount[] = [
   // Platform Superadmins
   {
     label: "Platform Owner",
-    email: "owner@knowletive.com",
+    email: "owner@coachgenie.in",
     category: "Platform",
     badge: "Superadmin",
     hint: "Full platform control of institutes, plans, and billing",
   },
   {
     label: "Platform Support",
-    email: "support@knowletive.com",
+    email: "support@coachgenie.in",
     category: "Platform",
     badge: "Support",
     hint: "Read-only access across institutes, audit log & AI telemetry",

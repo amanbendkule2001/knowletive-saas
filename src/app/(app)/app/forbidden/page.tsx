@@ -26,7 +26,7 @@ export default async function ForbiddenPage({
       <PageHeader
         eyebrow="Access control"
         title="You do not have access to this page"
-        description="Knowletive checks permissions on every page and every server action, so this block applies even if the URL is typed manually."
+        description="Coachgenie checks permissions on every page and every server action, so this block applies even if the URL is typed manually."
       />
 
       <Card className="mx-auto max-w-xl">

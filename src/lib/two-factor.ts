@@ -84,7 +84,7 @@ export function verifyTotp(secret: string, input: string) {
   return false;
 }
 
-export function totpUri(secret: string, email: string, issuer = "Knowletive") {
+export function totpUri(secret: string, email: string, issuer = "Coachgenie") {
   const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(email)}`;
   const params = new URLSearchParams({
     secret,

@@ -61,7 +61,7 @@ export default async function PlatformSettingsPage() {
                       name="name"
                       className="input"
                       required
-                      defaultValue={value.name ?? "Knowletive"}
+                      defaultValue={value.name ?? "Coachgenie"}
                     />
                   </Field>
                   <Field label="Support email" htmlFor="supportEmail" required>
@@ -71,7 +71,7 @@ export default async function PlatformSettingsPage() {
                       type="email"
                       className="input"
                       required
-                      defaultValue={value.supportEmail ?? "support@knowletive.com"}
+                      defaultValue={value.supportEmail ?? "support@coachgenie.in"}
                     />
                   </Field>
                   <Field

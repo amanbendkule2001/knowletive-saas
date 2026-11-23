@@ -83,6 +83,33 @@ export async function loginAction(_prev: FormState, formData: FormData): Promise
       },
     });
 
+    // Support alias resolution between Coachgenie and legacy seed accounts
+    if (!user) {
+      const lower = email.toLowerCase().trim();
+      let aliasEmail: string | null = null;
+      if (lower === "owner@coachgenie.in" || lower === "owner@thecoachgenie.in") {
+        aliasEmail = "owner@knowletive.com";
+      } else if (lower === "support@coachgenie.in" || lower === "support@thecoachgenie.in") {
+        aliasEmail = "support@knowletive.com";
+      } else if (lower === "owner@knowletive.com") {
+        aliasEmail = "owner@coachgenie.in";
+      } else if (lower === "support@knowletive.com") {
+        aliasEmail = "support@coachgenie.in";
+      }
+
+      if (aliasEmail) {
+        user = await db.user.findUnique({
+          where: { email: aliasEmail },
+          include: {
+            memberships: {
+              where: { status: "ACTIVE", tenant: { status: { not: "CHURNED" } } },
+              select: { tenantId: true, role: { select: { key: true } } },
+            },
+          },
+        });
+      }
+    }
+
     // Support signing in with Student Admission Number or Guardian Phone
     if (!user) {
       const student = await db.student.findFirst({

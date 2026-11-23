@@ -965,7 +965,7 @@ export async function forwardToCopilotEngine(
       answer = "I couldn't retrieve this information right now. Please try again later.";
     }
   } else {
-    answer = `I am your Knowletive AI Copilot. I can assist you with student records, attendance metrics, and fee financial reports. How can I assist you with your institute today?`;
+    answer = `I am your Coachgenie AI Copilot. I can assist you with student records, attendance metrics, and fee financial reports. How can I assist you with your institute today?`;
   }
 
   return {

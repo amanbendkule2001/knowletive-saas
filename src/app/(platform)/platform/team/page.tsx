@@ -102,7 +102,7 @@ export default async function PlatformTeamPage() {
       <PageHeader
         eyebrow="Governance"
         title="Platform team"
-        description="People who operate Knowletive itself — separate from institute staff. Platform roles are checked on every request."
+        description="People who operate Coachgenie itself — separate from institute staff. Platform roles are checked on every request."
         actions={<Badge tone="brand"><ShieldCheck className="size-3" /> {team.length} accounts</Badge>}
       />
 
@@ -131,7 +131,7 @@ export default async function PlatformTeamPage() {
                     <input id="name" name="name" className="input" required placeholder="Priya Nair" />
                   </Field>
                   <Field label="Work email" htmlFor="email" required>
-                    <input id="email" name="email" type="email" className="input" required placeholder="priya@knowletive.com" />
+                    <input id="email" name="email" type="email" className="input" required placeholder="priya@coachgenie.in" />
                   </Field>
                   <Field label="Temporary password" htmlFor="password" required hint="At least 8 characters with a letter and a number.">
                     <input

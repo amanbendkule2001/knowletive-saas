@@ -28,7 +28,7 @@ export function CopilotHeader({
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <h3 className="text-xs font-semibold text-[var(--foreground)] truncate">
-              Knowletive Copilot
+              Coachgenie Copilot
             </h3>
             <span className="rounded bg-emerald-500/10 px-1 py-0.2 text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
               Live

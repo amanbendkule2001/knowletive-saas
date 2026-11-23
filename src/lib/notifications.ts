@@ -203,7 +203,7 @@ export async function sendNotification(input: NotificationInput) {
 
     const result =
       input.channel === "EMAIL"
-        ? await deliverEmail(input.to, input.subject ?? "Knowletive update", input.body)
+        ? await deliverEmail(input.to, input.subject ?? "Coachgenie update", input.body)
         : input.channel === "SMS"
           ? await deliverSms(input.to, input.body)
           : await deliverWhatsApp(input.to, input.body);
@@ -250,16 +250,16 @@ export async function retryNotification(id: string) {
 
 export function passwordResetMessage(name: string, resetUrl: string) {
   return {
-    subject: "Reset your Knowletive password",
+    subject: "Reset your Coachgenie password",
     body: `Hi ${name},
 
-We received a request to reset your Knowletive password. Open the link below to choose a new one. It expires in 60 minutes and can be used once.
+We received a request to reset your Coachgenie password. Open the link below to choose a new one. It expires in 60 minutes and can be used once.
 
 ${resetUrl}
 
 If you did not request this, you can ignore this email. Your password will not change until the link is used.
 
-— Knowletive`,
+— Coachgenie`,
   };
 }
 

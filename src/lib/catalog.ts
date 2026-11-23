@@ -198,7 +198,7 @@ export const FEATURES: FeatureDef[] = [
   { key: "sms", label: "SMS notifications", description: "Fee reminders and absence alerts over SMS.", group: "Engagement", tier: "growth" },
   { key: "whatsapp", label: "WhatsApp notifications", description: "Templated WhatsApp updates to parents.", group: "Engagement", tier: "scale" },
   { key: "api_access", label: "API & webhooks", description: "REST API and outbound webhooks for integrations.", group: "Platform", tier: "scale" },
-  { key: "white_label", label: "White label", description: "Remove Knowletive branding and use your own.", group: "Platform", tier: "scale" },
+  { key: "white_label", label: "White label", description: "Remove Coachgenie branding and use your own.", group: "Platform", tier: "scale" },
   { key: "custom_domain", label: "Custom domain", description: "Run the portal on your own domain.", group: "Platform", tier: "scale" },
   { key: "priority_support", label: "Priority support", description: "Dedicated onboarding and 4-hour response SLA.", group: "Support", tier: "scale" },
   { key: "multi_campus", label: "Multi-campus", description: "Manage multiple branches under one institute.", group: "Platform", tier: "scale" },
@@ -485,5 +485,5 @@ export const AI_FEATURES: AiFeatureDef[] = [
 
 export const AI_FEATURE_MAP = new Map(AI_FEATURES.map((f) => [f.key, f]));
 
-export const PLATFORM_NAME = "Knowletive";
+export const PLATFORM_NAME = "Coachgenie";
 export const PLATFORM_TAGLINE = "The operating system for modern institutes";

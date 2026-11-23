@@ -3,37 +3,14 @@ import { cn } from "@/lib/utils";
 
 export function LogoMark({ size = 34, className }: { size?: number; className?: string }) {
   return (
-    <svg
+    <img
+      src="/coachgenie-logo.png"
+      alt="Coachgenie Logo"
       width={size}
       height={size}
-      viewBox="0 0 40 40"
-      fill="none"
-      aria-hidden
-      className={cn("shrink-0", className)}
-    >
-      <defs>
-        <linearGradient id="kl-mark" x1="4" y1="2" x2="37" y2="39" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#6366F1" />
-          <stop offset="0.5" stopColor="#8B5CF6" />
-          <stop offset="1" stopColor="#06B6D4" />
-        </linearGradient>
-      </defs>
-      <rect width="40" height="40" rx="11" fill="url(#kl-mark)" />
-      <path
-        d="M12 10.5V29.5"
-        stroke="white"
-        strokeWidth="3.4"
-        strokeLinecap="round"
-      />
-      <path
-        d="M27 10.5L15.5 20L27 29.5"
-        stroke="white"
-        strokeWidth="3.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx="28.6" cy="20" r="2.1" fill="white" opacity="0.92" />
-    </svg>
+      className={cn("shrink-0 object-contain drop-shadow-sm", className)}
+      style={{ width: size, height: size }}
+    />
   );
 }
 
@@ -55,7 +32,7 @@ export function Logo({
       <LogoMark size={size} />
       {showText && (
         <span className="min-w-0">
-          <span className="block truncate text-[15px] font-semibold tracking-tight">Knowletive</span>
+          <span className="block truncate text-[15px] font-semibold tracking-tight">Coachgenie</span>
           {subtitle && (
             <span className="block truncate text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
               {subtitle}
@@ -66,7 +43,7 @@ export function Logo({
     </span>
   );
   return href ? (
-    <Link href={href} className="inline-flex items-center" aria-label="Knowletive home">
+    <Link href={href} className="inline-flex items-center" aria-label="Coachgenie home">
       {content}
     </Link>
   ) : (

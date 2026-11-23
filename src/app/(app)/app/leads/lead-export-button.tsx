@@ -31,7 +31,7 @@ export function LeadExportButton({ status, q, total }: LeadExportButtonProps) {
 
       const blob = await res.blob();
       const contentDisposition = res.headers.get("content-disposition");
-      let filename = `knowletive-leads-${new Date().toISOString().slice(0, 10)}.csv`;
+      let filename = `coachgenie-leads-${new Date().toISOString().slice(0, 10)}.csv`;
       if (contentDisposition) {
         const match = contentDisposition.match(/filename="?([^";]+)"?/);
         if (match && match[1]) filename = match[1];

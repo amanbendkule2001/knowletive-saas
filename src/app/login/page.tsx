@@ -33,7 +33,7 @@ export default async function LoginPage({
   const { email } = await searchParams;
   const preset =
     DEMO_ACCOUNTS.find((a) => a.email.toLowerCase() === email?.toLowerCase())?.email ??
-    (email ?? "owner@knowletive.com");
+    (email ?? "owner@coachgenie.in");
 
   return (
     <div className="grid min-h-dvh lg:grid-cols-[1.05fr_0.95fr]">
@@ -43,7 +43,7 @@ export default async function LoginPage({
         <div className="relative">
           <Link href="/" className="inline-flex items-center gap-2.5 text-white">
             <LogoMark size={34} />
-            <span className="text-[15px] font-semibold">Knowletive</span>
+            <span className="text-[15px] font-semibold">Coachgenie</span>
           </Link>
         </div>
         <div className="relative max-w-md">
@@ -103,7 +103,7 @@ export default async function LoginPage({
 
             <p className="mt-6 text-center text-[11px] text-muted">
               New institute?{" "}
-              <a href="mailto:support@knowletive.com" className="link">
+              <a href="mailto:support@coachgenie.in" className="link">
                 Talk to the platform team
               </a>
             </p>

@@ -6,12 +6,12 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.APP_URL ?? "http://localhost:3000"),
   title: {
-    default: "Knowletive — The operating system for modern institutes",
-    template: "%s · Knowletive",
+    default: "Coachgenie — The operating system for modern institutes",
+    template: "%s · Coachgenie",
   },
   description:
     "Multi-tenant school, college and coaching management SaaS with roles, subscriptions, billing and AI modules — managed end-to-end from one platform console.",
-  applicationName: "Knowletive",
+  applicationName: "Coachgenie",
   keywords: [
     "school management software",
     "institute ERP",
@@ -20,15 +20,15 @@ export const metadata: Metadata = {
     "school fees software",
     "AI for schools",
   ],
-  authors: [{ name: "Knowletive" }],
+  authors: [{ name: "Coachgenie" }],
   openGraph: {
-    title: "Knowletive — The operating system for modern institutes",
+    title: "Coachgenie — The operating system for modern institutes",
     description:
       "One platform for institutes, roles, parents, students, subscriptions and AI workflows.",
     type: "website",
   },
   robots: { index: true, follow: true },
-  icons: { icon: "/icon.svg" },
+  icons: { icon: "/coachgenie-logo.png" },
 };
 
 export const viewport: Viewport = {

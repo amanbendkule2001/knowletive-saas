@@ -33,7 +33,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             administrator to send an invitation.
           </p>
           <div className="mt-5 flex justify-center gap-2">
-            <a href="mailto:support@knowletive.com" className="btn btn-primary">
+            <a href="mailto:support@coachgenie.in" className="btn btn-primary">
               Contact support
             </a>
             <form action={logoutAction}>
@@ -73,7 +73,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-2">
-            <a href="mailto:support@knowletive.com" className="btn btn-primary">
+            <a href="mailto:support@coachgenie.in" className="btn btn-primary">
               Contact support
             </a>
             <form action={logoutAction}>

@@ -291,7 +291,7 @@ export default async function PublicPayPage({
 
         {/* Footer info */}
         <div className="text-center text-xs text-muted pt-4">
-          <p>Powered by Knowletive Institute OS &bull; Zero Additional Transaction Surcharges</p>
+          <p>Powered by Coachgenie Institute OS &bull; Zero Additional Transaction Surcharges</p>
         </div>
       </div>
     </div>
