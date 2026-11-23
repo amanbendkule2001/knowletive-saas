@@ -56,194 +56,212 @@ async function getDummyHash() {
 }
 
 export async function loginAction(_prev: FormState, formData: FormData): Promise<FormState> {
-  const raw = {
-    email: formData.get("email"),
-    password: formData.get("password"),
-  };
-  const parsed = loginSchema.safeParse(raw);
-  if (!parsed.success) return fieldErrors(parsed.error);
-
-  const { email, password } = parsed.data;
-  const meta = await clientMeta();
-  const limit = await rateLimit(`login:${meta.ip ?? "unknown"}:${email}`, 8, 10 * 60 * 1000);
-  if (!limit.ok) {
-    return {
-      error: `Too many sign-in attempts. Try again in ${Math.ceil(limit.retryAfterMs / 60000)} minutes.`,
+  try {
+    const raw = {
+      email: formData.get("email"),
+      password: formData.get("password"),
     };
-  }
+    const parsed = loginSchema.safeParse(raw);
+    if (!parsed.success) return fieldErrors(parsed.error);
 
-  let user = await db.user.findUnique({
-    where: { email },
-    include: {
-      memberships: {
-        where: { status: "ACTIVE", tenant: { status: { not: "CHURNED" } } },
-        select: { tenantId: true, role: { select: { key: true } } },
-      },
-    },
-  });
-
-  // Support signing in with Student Admission Number or Guardian Phone
-  if (!user) {
-    const student = await db.student.findFirst({
-      where: {
-        admissionNo: { equals: email, mode: "insensitive" },
-        userId: { not: null },
-      },
-      select: { userId: true },
-    });
-    if (student?.userId) {
-      user = await db.user.findUnique({
-        where: { id: student.userId },
-        include: {
-          memberships: {
-            where: { status: "ACTIVE", tenant: { status: { not: "CHURNED" } } },
-            select: { tenantId: true, role: { select: { key: true } } },
-          },
-        },
-      });
+    const { email, password } = parsed.data;
+    const meta = await clientMeta();
+    const limit = await rateLimit(`login:${meta.ip ?? "unknown"}:${email}`, 8, 10 * 60 * 1000);
+    if (!limit.ok) {
+      return {
+        error: `Too many sign-in attempts. Try again in ${Math.ceil(limit.retryAfterMs / 60000)} minutes.`,
+      };
     }
-  }
 
-  if (!user) {
-    const cleanPhone = email.replace(/[^0-9]/g, "");
-    const guardian = await db.guardian.findFirst({
-      where: {
-        OR: [
-          { phone: email },
-          ...(cleanPhone.length >= 7 ? [{ phone: { contains: cleanPhone } }] : []),
-          { email },
-        ],
-        userId: { not: null },
+    let user = await db.user.findUnique({
+      where: { email },
+      include: {
+        memberships: {
+          where: { status: "ACTIVE", tenant: { status: { not: "CHURNED" } } },
+          select: { tenantId: true, role: { select: { key: true } } },
+        },
       },
-      select: { userId: true },
     });
-    if (guardian?.userId) {
-      user = await db.user.findUnique({
-        where: { id: guardian.userId },
-        include: {
-          memberships: {
-            where: { status: "ACTIVE", tenant: { status: { not: "CHURNED" } } },
-            select: { tenantId: true, role: { select: { key: true } } },
+
+    // Support signing in with Student Admission Number or Guardian Phone
+    if (!user) {
+      const student = await db.student.findFirst({
+        where: {
+          admissionNo: { equals: email, mode: "insensitive" },
+          userId: { not: null },
+        },
+        select: { userId: true },
+      });
+      if (student?.userId) {
+        user = await db.user.findUnique({
+          where: { id: student.userId },
+          include: {
+            memberships: {
+              where: { status: "ACTIVE", tenant: { status: { not: "CHURNED" } } },
+              select: { tenantId: true, role: { select: { key: true } } },
+            },
           },
-        },
-      });
+        });
+      }
     }
-  }
 
-  if (user?.lockedUntil && user.lockedUntil > new Date()) {
-    const minutesLeft = Math.max(1, Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000));
-    await writeAudit({
-      actorId: user.id,
-      actorType: user.isPlatformOwner ? "PLATFORM" : "TENANT",
-      actorName: user.name,
-      action: "auth.login_locked",
-      entity: "User",
-      entityId: user.id,
-      ip: meta.ip,
-    });
-    return {
-      error: `This account is temporarily locked due to too many failed sign-in attempts. Try again in ${minutesLeft} minute${minutesLeft > 1 ? "s" : ""}.`,
-    };
-  }
-
-  const hash = user?.passwordHash ?? (await getDummyHash());
-  let valid = await verifyPassword(password, hash);
-  if (!valid && password.trim() !== password) {
-    valid = await verifyPassword(password.trim(), hash);
-  }
-  const cleanPass = password.trim().toLowerCase();
-  if (!valid && (cleanPass === "admin@123" || cleanPass === "admin123")) {
-    valid = await verifyPassword("Admin@123", hash);
-  }
-
-  if (!user || !valid) {
-    if (user) {
-      const failedAttempts = (user.failedLoginAttempts ?? 0) + 1;
-      const isNowLocked = failedAttempts >= 5;
-      const lockedUntil = isNowLocked ? new Date(Date.now() + 15 * 60 * 1000) : null;
-
-      await db.user.update({
-        where: { id: user.id },
-        data: {
-          failedLoginAttempts: failedAttempts,
-          lockedUntil,
+    if (!user) {
+      const cleanPhone = email.replace(/[^0-9]/g, "");
+      const guardian = await db.guardian.findFirst({
+        where: {
+          OR: [
+            { phone: email },
+            ...(cleanPhone.length >= 7 ? [{ phone: { contains: cleanPhone } }] : []),
+            { email },
+          ],
+          userId: { not: null },
         },
+        select: { userId: true },
       });
+      if (guardian?.userId) {
+        user = await db.user.findUnique({
+          where: { id: guardian.userId },
+          include: {
+            memberships: {
+              where: { status: "ACTIVE", tenant: { status: { not: "CHURNED" } } },
+              select: { tenantId: true, role: { select: { key: true } } },
+            },
+          },
+        });
+      }
+    }
 
+    if (user?.lockedUntil && user.lockedUntil > new Date()) {
+      const minutesLeft = Math.max(1, Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000));
       await writeAudit({
         actorId: user.id,
         actorType: user.isPlatformOwner ? "PLATFORM" : "TENANT",
         actorName: user.name,
-        action: isNowLocked ? "auth.account_locked" : "auth.login_failed",
+        action: "auth.login_locked",
         entity: "User",
         entityId: user.id,
         ip: meta.ip,
-        meta: { failedAttempts },
       });
+      return {
+        error: `This account is temporarily locked due to too many failed sign-in attempts. Try again in ${minutesLeft} minute${minutesLeft > 1 ? "s" : ""}.`,
+      };
+    }
 
-      if (isNowLocked) {
-        return {
-          error: "Too many failed sign-in attempts. Your account has been temporarily locked for 15 minutes for security.",
-        };
+    const hash = user?.passwordHash ?? (await getDummyHash());
+    let valid = await verifyPassword(password, hash);
+    if (!valid && password.trim() !== password) {
+      valid = await verifyPassword(password.trim(), hash);
+    }
+    const cleanPass = password.trim().toLowerCase();
+    if (!valid && (cleanPass === "admin@123" || cleanPass === "admin123")) {
+      valid = await verifyPassword("Admin@123", hash);
+    }
+
+    if (!user || !valid) {
+      if (user) {
+        const failedAttempts = (user.failedLoginAttempts ?? 0) + 1;
+        const isNowLocked = failedAttempts >= 5;
+        const lockedUntil = isNowLocked ? new Date(Date.now() + 15 * 60 * 1000) : null;
+
+        await db.user.update({
+          where: { id: user.id },
+          data: {
+            failedLoginAttempts: failedAttempts,
+            lockedUntil,
+          },
+        });
+
+        await writeAudit({
+          actorId: user.id,
+          actorType: user.isPlatformOwner ? "PLATFORM" : "TENANT",
+          actorName: user.name,
+          action: isNowLocked ? "auth.account_locked" : "auth.login_failed",
+          entity: "User",
+          entityId: user.id,
+          ip: meta.ip,
+          meta: { failedAttempts },
+        });
+
+        if (isNowLocked) {
+          return {
+            error: "Too many failed sign-in attempts. Your account has been temporarily locked for 15 minutes for security.",
+          };
+        }
+      }
+      return { error: "Incorrect email or password." };
+    }
+    if (user.status !== "ACTIVE") {
+      return { error: "This account is not active. Contact your platform administrator." };
+    }
+
+    if (user.failedLoginAttempts > 0 || user.lockedUntil) {
+      await db.user.update({
+        where: { id: user.id },
+        data: { failedLoginAttempts: 0, lockedUntil: null },
+      });
+    }
+
+    const jar = await cookies();
+    const currentTenantId = jar.get(TENANT_COOKIE)?.value;
+    const validTenantCookie = user.memberships.find((m) => m.tenantId === currentTenantId);
+
+    let targetTenantId: string | null = null;
+    let targetNext = "/app";
+
+    if (user.isPlatformOwner || user.platformRoleId) {
+      targetNext = "/platform";
+    } else if (validTenantCookie) {
+      targetTenantId = validTenantCookie.tenantId;
+      const isStaff = STAFF_ROLES.has(validTenantCookie.role.key);
+      targetNext = isStaff ? "/app" : "/portal";
+    } else if (user.memberships.length === 1) {
+      targetTenantId = user.memberships[0].tenantId;
+      const isStaff = STAFF_ROLES.has(user.memberships[0].role.key);
+      targetNext = isStaff ? "/app" : "/portal";
+    } else if (user.memberships.length > 1) {
+      targetNext = "/select-institute";
+    }
+
+    if (user.twoFactorEnabled && user.twoFactorSecret) {
+      await createPendingLogin(user.id, targetNext);
+      redirect(`/login/2fa?next=${encodeURIComponent(targetNext)}`);
+    }
+
+    await createSession(user.id, meta);
+    if (targetTenantId) {
+      await setActiveTenant(targetTenantId);
+    }
+    await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+
+    await writeAudit({
+      tenantId: targetTenantId,
+      actorId: user.id,
+      actorType: user.isPlatformOwner ? "PLATFORM" : "TENANT",
+      actorName: user.name,
+      action: "auth.login",
+      entity: "User",
+      entityId: user.id,
+      ip: meta.ip,
+    });
+
+    redirect(targetNext);
+  } catch (err: unknown) {
+    if (typeof err === "object" && err !== null && "digest" in err) {
+      const digest = (err as { digest: string }).digest;
+      if (typeof digest === "string" && digest.startsWith("NEXT_REDIRECT")) {
+        throw err;
       }
     }
-    return { error: "Incorrect email or password." };
+    console.error("Login action error:", err);
+    const msg = (err as Error)?.message ?? "";
+    if (msg.includes("Can't reach database") || msg.includes("connect") || msg.includes("ECONNREFUSED") || msg.includes("5432") || msg.includes("5544")) {
+      return { error: "Cannot connect to database. Please configure DATABASE_URL in Coolify Environment Variables." };
+    }
+    if (msg.includes("does not exist") || msg.includes("relation") || msg.includes("table")) {
+      return { error: "Database tables not initialized. Please run 'npm run setup' to create tables." };
+    }
+    return { error: "Sign-in error: " + (msg.slice(0, 150) || "Unable to reach database.") };
   }
-  if (user.status !== "ACTIVE") {
-    return { error: "This account is not active. Contact your platform administrator." };
-  }
-
-  if (user.failedLoginAttempts > 0 || user.lockedUntil) {
-    await db.user.update({
-      where: { id: user.id },
-      data: { failedLoginAttempts: 0, lockedUntil: null },
-    });
-  }
-
-  const jar = await cookies();
-  const currentTenantId = jar.get(TENANT_COOKIE)?.value;
-  const validTenantCookie = user.memberships.find((m) => m.tenantId === currentTenantId);
-
-  let targetTenantId: string | null = null;
-  let targetNext = "/app";
-
-  if (user.isPlatformOwner || user.platformRoleId) {
-    targetNext = "/platform";
-  } else if (validTenantCookie) {
-    targetTenantId = validTenantCookie.tenantId;
-    const isStaff = STAFF_ROLES.has(validTenantCookie.role.key);
-    targetNext = isStaff ? "/app" : "/portal";
-  } else if (user.memberships.length === 1) {
-    targetTenantId = user.memberships[0].tenantId;
-    const isStaff = STAFF_ROLES.has(user.memberships[0].role.key);
-    targetNext = isStaff ? "/app" : "/portal";
-  } else if (user.memberships.length > 1) {
-    targetNext = "/select-institute";
-  }
-
-  if (user.twoFactorEnabled && user.twoFactorSecret) {
-    await createPendingLogin(user.id, targetNext);
-    redirect(`/login/2fa?next=${encodeURIComponent(targetNext)}`);
-  }
-
-  await createSession(user.id, meta);
-  if (targetTenantId) {
-    await setActiveTenant(targetTenantId);
-  }
-  await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-
-  await writeAudit({
-    tenantId: targetTenantId,
-    actorId: user.id,
-    actorType: user.isPlatformOwner ? "PLATFORM" : "TENANT",
-    actorName: user.name,
-    action: "auth.login",
-    entity: "User",
-    entityId: user.id,
-    ip: meta.ip,
-  });
-
-  redirect(targetNext);
 }
 
 export async function verifyTwoFactorLoginAction(
