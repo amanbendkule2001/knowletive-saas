@@ -42,10 +42,22 @@ function toDate(value: unknown): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+let boardColumnChecked = false;
+export async function ensureLeadBoardColumn() {
+  if (boardColumnChecked) return;
+  try {
+    await db.$executeRawUnsafe(`ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "board" TEXT;`);
+    boardColumnChecked = true;
+  } catch (err) {
+    console.warn("[leads] Failed to auto-create Lead.board column:", err);
+  }
+}
+
 import { createLeadSchema, convertLeadSchema } from "@/lib/leads-schema";
 const leadSchema = createLeadSchema;
 
 export async function createLeadAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  await ensureLeadBoardColumn();
   const auth = await authorizeTenantWrite("tenant.leads.write", "create");
   if (!auth.ok) return { error: auth.error };
   const ctx = auth.ctx;
@@ -174,6 +186,7 @@ export async function createLeadAction(_prev: FormState, formData: FormData): Pr
 }
 
 export async function updateLeadAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  await ensureLeadBoardColumn();
   const auth = await authorizeTenantWrite("tenant.leads.write", "update");
   if (!auth.ok) return { error: auth.error };
   const ctx = auth.ctx;

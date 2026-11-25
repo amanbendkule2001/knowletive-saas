@@ -103,6 +103,7 @@ export default async function AnnouncementsPage({
           value={num(total)}
           sub="all audiences"
           icon={<Megaphone className="size-4" />}
+          href="/app/announcements"
         />
         <StatCard
           label="Pinned"
@@ -110,6 +111,7 @@ export default async function AnnouncementsPage({
           sub="shown first in the list"
           icon={<Pin className="size-4" />}
           tone="warning"
+          href="#notices"
         />
         <StatCard
           label="Parent notices"
@@ -117,11 +119,12 @@ export default async function AnnouncementsPage({
           sub="visible to guardians"
           icon={<Users className="size-4" />}
           tone="info"
+          href="#notices"
         />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
-        <div className="space-y-4">
+        <div className="space-y-4" id="notices">
           <Card>
             <CardHeader
               title="Published notices"

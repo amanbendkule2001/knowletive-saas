@@ -70,6 +70,7 @@ export default async function BranchesPage() {
           value={branches.length}
           sub="configured in institute"
           icon={<Building2 className="size-4" />}
+          href="/app/branches"
         />
         <StatCard
           label="Active Campuses"
@@ -77,6 +78,7 @@ export default async function BranchesPage() {
           sub="accepting admissions & fees"
           icon={<CheckCircle2 className="size-4" />}
           tone={activeBranches.length > 0 ? "success" : "danger"}
+          href="/app/branches"
         />
         <StatCard
           label="Inactive / Archived"
@@ -84,6 +86,7 @@ export default async function BranchesPage() {
           sub="temporarily deactivated"
           icon={<RotateCcw className="size-4" />}
           tone={inactiveBranches.length > 0 ? "warning" : "neutral"}
+          href="/app/branches"
         />
       </div>
 

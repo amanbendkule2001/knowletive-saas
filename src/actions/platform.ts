@@ -12,7 +12,7 @@ import { hashPassword } from "@/lib/auth";
 import { writeAudit } from "@/lib/audit";
 import { slugify, sequenceNumber } from "@/lib/utils";
 import { addDays, addMonths } from "@/lib/format";
-import { createSubscriptionInvoice, markInvoicePaid } from "@/lib/billing";
+import { createSubscriptionInvoice, createCustomInvoiceWithGst, markInvoicePaid } from "@/lib/billing";
 import { DEFAULT_CBSE_BANDS } from "@/lib/grade-scales";
 import {
   PLATFORM_PERMISSION_KEYS,
@@ -408,6 +408,75 @@ export async function createTenantInvoiceAction(formData: FormData) {
   });
   revalidatePath("/platform/subscriptions");
   revalidatePath(`/platform/institutes/${tenantId}`);
+}
+
+export async function createCustomInvoiceWithGstAction(
+  _prev: any,
+  formData: FormData
+): Promise<{ success?: string; error?: string }> {
+  const actor = await requirePlatformPermission("platform.subscriptions.manage");
+  const tenantId = String(formData.get("tenantId") ?? "").trim();
+  const rawCharges = Number(formData.get("charges") ?? 0);
+  const rawGstPercent = Number(formData.get("gstPercent") ?? 18);
+  const description =
+    String(formData.get("description") ?? "").trim() || "Platform subscription service charges";
+  const dueDays = Math.max(1, Number(formData.get("dueDays") ?? 7));
+  const notes = String(formData.get("notes") ?? "").trim();
+
+  if (!tenantId) {
+    return { error: "Please select an institute." };
+  }
+  if (isNaN(rawCharges) || rawCharges <= 0) {
+    return { error: "Please enter a valid charge amount greater than 0." };
+  }
+
+  const tenant = await db.tenant.findUnique({
+    where: { id: tenantId },
+    select: { id: true, name: true },
+  });
+  if (!tenant) {
+    return { error: "Institute not found." };
+  }
+
+  const chargesPaise = Math.round(rawCharges * 100);
+  const gstRate = Math.max(0, rawGstPercent / 100);
+
+  try {
+    const invoice = await createCustomInvoiceWithGst({
+      tenantId,
+      chargesPaise,
+      gstRate,
+      description,
+      dueDays,
+      notes,
+    });
+
+    await writeAudit({
+      tenantId,
+      actorId: actor.id,
+      actorType: "PLATFORM",
+      actorName: actor.name,
+      action: "invoice.create_custom",
+      entity: "Invoice",
+      entityId: invoice.id,
+      meta: {
+        number: invoice.number,
+        charges: rawCharges,
+        gstPercent: rawGstPercent,
+        tax: invoice.tax / 100,
+        total: invoice.total / 100,
+      },
+    });
+
+    revalidatePath("/platform/subscriptions");
+    revalidatePath(`/platform/institutes/${tenantId}`);
+    return {
+      success: `Invoice ${invoice.number} created for ${tenant.name} totaling ₹${(invoice.total / 100).toLocaleString("en-IN")}.`,
+    };
+  } catch (error: any) {
+    console.error("[billing] failed to create custom invoice", error);
+    return { error: error?.message || "Failed to create invoice." };
+  }
 }
 
 // ─────────────────────────────── Plans ───────────────────────────────

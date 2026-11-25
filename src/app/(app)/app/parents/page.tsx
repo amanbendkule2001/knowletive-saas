@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Plus, Search, Users } from "lucide-react";
+import { Plus, Search, Users, UserCheck, ShieldCheck } from "lucide-react";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requireTenantPermission } from "@/lib/rbac";
@@ -11,6 +11,7 @@ import {
   Card,
   PageHeader,
   Pagination,
+  StatCard,
 } from "@/components/ui/primitives";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { num } from "@/lib/format";
@@ -260,24 +261,34 @@ export default async function ParentsPage({
       )}
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <div className="card p-4">
-          <p className="text-xs text-muted">Guardians</p>
-          <p className="mt-1.5 text-2xl font-semibold tabular-nums">{num(total)}</p>
-          <p className="text-[11px] text-muted">{q ? "matching your search" : "in this institute"}</p>
-        </div>
-        <div className="card p-4">
-          <p className="text-xs text-muted">Student links</p>
-          <p className="mt-1.5 text-2xl font-semibold tabular-nums">{num(linkCount)}</p>
-          <p className="text-[11px] text-muted">guardian ↔ student relationships</p>
-        </div>
-        <div className="card p-4">
-          <p className="text-xs text-muted">Coverage</p>
-          <p className="mt-1.5 text-2xl font-semibold tabular-nums">
-            {num(coveredStudents)}
-            <span className="text-sm font-normal text-muted"> / {num(activeStudents)}</span>
-          </p>
-          <p className="text-[11px] text-muted">active students with a guardian link</p>
-        </div>
+        <StatCard
+          label="Guardians"
+          value={num(total)}
+          sub={q ? "matching your search" : "in this institute"}
+          icon={<Users className="size-4" />}
+          href="/app/parents"
+        />
+        <StatCard
+          label="Student links"
+          value={num(linkCount)}
+          sub="guardian ↔ student relationships"
+          icon={<UserCheck className="size-4" />}
+          tone="info"
+          href="/app/students"
+        />
+        <StatCard
+          label="Coverage"
+          value={
+            <>
+              {num(coveredStudents)}
+              <span className="text-sm font-normal text-muted"> / {num(activeStudents)}</span>
+            </>
+          }
+          sub="active students with a guardian link"
+          icon={<ShieldCheck className="size-4" />}
+          tone={coveredStudents === activeStudents && activeStudents > 0 ? "success" : "warning"}
+          href="/app/students"
+        />
       </div>
 
       <Card>

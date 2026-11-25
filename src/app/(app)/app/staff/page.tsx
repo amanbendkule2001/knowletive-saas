@@ -10,6 +10,7 @@ import {
   Card,
   PageHeader,
   Pagination,
+  StatCard,
   statusLabel,
   statusTone,
 } from "@/components/ui/primitives";

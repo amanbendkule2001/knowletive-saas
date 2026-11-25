@@ -20,6 +20,7 @@ import {
   updateLeadAction,
   logLeadActivityAction,
   convertLeadAction,
+  ensureLeadBoardColumn,
 } from "@/actions/leads";
 import { getNextAdmissionNumber } from "@/actions/students";
 import { ActionForm } from "@/components/ui/action-form";
@@ -72,20 +73,35 @@ export default async function LeadDetailPage({
   const { id } = await params;
   const sp = await searchParams;
 
-  const lead = await db.lead.findFirst({
-    where: { id, tenantId: ctx.tenant.id },
-    include: {
-      assignedTo: { include: { user: true } },
-      academicYear: true,
-      convertedStudent: {
-        include: { section: { include: { class: true } } },
+  await ensureLeadBoardColumn();
+
+  const fetchLead = () =>
+    db.lead.findFirst({
+      where: { id, tenantId: ctx.tenant.id },
+      include: {
+        assignedTo: { include: { user: true } },
+        academicYear: true,
+        convertedStudent: {
+          include: { section: { include: { class: true } } },
+        },
+        activities: {
+          include: { actor: true },
+          orderBy: { createdAt: "desc" },
+        },
       },
-      activities: {
-        include: { actor: true },
-        orderBy: { createdAt: "desc" },
-      },
-    },
-  });
+    });
+
+  let lead;
+  try {
+    lead = await fetchLead();
+  } catch (err: any) {
+    if (err?.code === "P2022" || err?.message?.includes("board")) {
+      await db.$executeRawUnsafe(`ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "board" TEXT;`);
+      lead = await fetchLead();
+    } else {
+      throw err;
+    }
+  }
 
   if (!lead) notFound();
 

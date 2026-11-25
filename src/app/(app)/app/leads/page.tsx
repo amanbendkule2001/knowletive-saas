@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/primitives";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { resolveUserBranchScope } from "@/lib/branch";
+import { ensureLeadBoardColumn } from "@/actions/leads";
 import { date, num } from "@/lib/format";
 import type { Prisma, LeadStatus } from "@prisma/client";
 
@@ -104,36 +105,62 @@ export default async function LeadsPage({
       : {}),
   };
 
-  const [leads, total, statusCounts, upcomingFollowUps] = await Promise.all([
-    db.lead.findMany({
-      where,
-      include: {
-        assignedTo: { include: { user: true } },
-        academicYear: true,
-        convertedStudent: true,
-      },
-      orderBy: [{ status: "asc" }, { createdAt: "desc" }],
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-    }),
-    db.lead.count({ where }),
-    db.lead.groupBy({
-      by: ["status"],
-      where: { tenantId, ...branchFilter },
-      _count: { _all: true },
-    }),
-    db.lead.findMany({
-      where: {
-        tenantId,
-        ...branchFilter,
-        status: { in: ["NEW", "CONTACTED", "FOLLOW_UP", "INTERESTED"] },
-        nextFollowUp: { not: null },
-      },
-      orderBy: { nextFollowUp: "asc" },
-      take: 5,
-      include: { assignedTo: { include: { user: true } } },
-    }),
-  ]);
+  await ensureLeadBoardColumn();
+
+  type QueryResult = [
+    LeadRow[],
+    number,
+    { status: LeadStatus; _count: { _all: number } }[],
+    any[]
+  ];
+
+  const runQueries = (): Promise<QueryResult> =>
+    Promise.all([
+      db.lead.findMany({
+        where,
+        include: {
+          assignedTo: { include: { user: true } },
+          academicYear: true,
+          convertedStudent: true,
+        },
+        orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+        skip: (page - 1) * PAGE_SIZE,
+        take: PAGE_SIZE,
+      }),
+      db.lead.count({ where }),
+      db.lead.groupBy({
+        by: ["status"],
+        where: { tenantId, ...branchFilter },
+        _count: { _all: true },
+      }),
+      db.lead.findMany({
+        where: {
+          tenantId,
+          ...branchFilter,
+          status: { in: ["NEW", "CONTACTED", "FOLLOW_UP", "INTERESTED"] },
+          nextFollowUp: { not: null },
+        },
+        orderBy: { nextFollowUp: "asc" },
+        take: 5,
+        include: { assignedTo: { include: { user: true } } },
+      }),
+    ]);
+
+  let leads: LeadRow[];
+  let total: number;
+  let statusCounts: { status: LeadStatus; _count: { _all: number } }[];
+  let upcomingFollowUps: any[];
+
+  try {
+    [leads, total, statusCounts, upcomingFollowUps] = await runQueries();
+  } catch (err: any) {
+    if (err?.code === "P2022" || err?.message?.includes("board")) {
+      await db.$executeRawUnsafe(`ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "board" TEXT;`);
+      [leads, total, statusCounts, upcomingFollowUps] = await runQueries();
+    } else {
+      throw err;
+    }
+  }
 
   const counts: Record<string, number> = statusCounts.reduce(
     (acc, c) => ({ ...acc, [c.status]: c._count._all }),
@@ -149,21 +176,39 @@ export default async function LeadsPage({
       key: "student",
       header: "Prospective Student",
       mobile: "title",
-      render: (lead) => (
-        <div>
-          <Link
-            href={`/app/leads/${lead.id}`}
-            className="font-medium text-[var(--text)] hover:text-[var(--brand)] hover:underline"
-          >
-            {lead.studentName}
-          </Link>
-          <p className="text-xs text-muted">
-            {lead.classInterested ? `Interested in ${lead.classInterested}` : "Class not specified"}
-            {(lead as any).board ? ` · ${(lead as any).board}` : ""}
-            {lead.academicYear ? ` · ${lead.academicYear.name}` : ""}
-          </p>
-        </div>
-      ),
+      render: (lead) => {
+        const isNew = lead.status === "NEW" || Date.now() - new Date(lead.createdAt).getTime() < 48 * 3600 * 1000;
+        const isRecentlyUpdated = !isNew && Date.now() - new Date(lead.updatedAt).getTime() < 48 * 3600 * 1000;
+        return (
+          <div>
+            <div className="flex items-center gap-1.5">
+              <Link
+                href={`/app/leads/${lead.id}`}
+                className="font-medium text-[var(--text)] hover:text-[var(--brand)] hover:underline"
+              >
+                {lead.studentName}
+              </Link>
+              {isNew && (
+                <span className="inline-flex items-center gap-1 rounded bg-[var(--brand-soft)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[var(--brand)]">
+                  <span className="size-1 rounded-full bg-[var(--brand)] animate-pulse" />
+                  New
+                </span>
+              )}
+              {isRecentlyUpdated && (
+                <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                  <span className="size-1 rounded-full bg-amber-500 animate-pulse" />
+                  Updated
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-muted">
+              {lead.classInterested ? `Interested in ${lead.classInterested}` : "Class not specified"}
+              {(lead as any).board ? ` · ${(lead as any).board}` : ""}
+              {lead.academicYear ? ` · ${lead.academicYear.name}` : ""}
+            </p>
+          </div>
+        );
+      },
     },
     {
       key: "guardian",
@@ -255,42 +300,62 @@ export default async function LeadsPage({
           value={num(totalAll)}
           sub="All registered leads"
           icon={<Users className="size-4 text-muted" />}
+          href="/app/leads"
+          active={!statusFilter}
         />
         <StatCard
           label="New"
           value={num(counts.NEW ?? 0)}
           sub="Awaiting first contact"
-          icon={<MessageSquare className="size-4 text-muted" />}
+          icon={<MessageSquare className="size-4" />}
+          tone="neutral"
+          href="/app/leads?status=NEW"
+          active={statusFilter === "NEW"}
         />
         <StatCard
           label="Contacted"
           value={num(counts.CONTACTED ?? 0)}
           sub="Initial call made"
-          icon={<Clock className="size-4 text-[var(--info)]" />}
+          icon={<Clock className="size-4" />}
+          tone="info"
+          href="/app/leads?status=CONTACTED"
+          active={statusFilter === "CONTACTED"}
         />
         <StatCard
           label="Follow-Up"
           value={num(counts.FOLLOW_UP ?? 0)}
           sub="Action scheduled"
-          icon={<Calendar className="size-4 text-[var(--warning)]" />}
+          icon={<Calendar className="size-4" />}
+          tone="warning"
+          href="/app/leads?status=FOLLOW_UP"
+          active={statusFilter === "FOLLOW_UP"}
         />
         <StatCard
           label="Interested"
           value={num(counts.INTERESTED ?? 0)}
           sub="High purchase intent"
-          icon={<Flame className="size-4 text-[var(--brand)]" />}
+          icon={<Flame className="size-4" />}
+          tone="brand"
+          href="/app/leads?status=INTERESTED"
+          active={statusFilter === "INTERESTED"}
         />
         <StatCard
           label="Converted"
           value={num(counts.CONVERTED ?? 0)}
           sub="Enrolled as students"
-          icon={<UserCheck className="size-4 text-[var(--success)]" />}
+          icon={<UserCheck className="size-4" />}
+          tone="success"
+          href="/app/leads?status=CONVERTED"
+          active={statusFilter === "CONVERTED"}
         />
         <StatCard
           label="Lost"
           value={num(counts.LOST ?? 0)}
           sub="Not proceeding"
-          icon={<CheckCircle2 className="size-4 text-muted" />}
+          icon={<CheckCircle2 className="size-4" />}
+          tone="danger"
+          href="/app/leads?status=LOST"
+          active={statusFilter === "LOST"}
         />
       </div>
 

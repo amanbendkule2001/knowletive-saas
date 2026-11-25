@@ -35,6 +35,7 @@ import { QuickActionsDropdown } from "@/components/shell/quick-actions";
 import { Logo, LogoMark } from "@/components/ui/logo";
 import { Avatar } from "@/components/ui/primitives";
 import { logoutAction, switchTenantAction } from "@/actions/auth";
+import { getLiveModuleBadgesAction } from "@/actions/badges";
 import { cn } from "@/lib/utils";
 
 const icons: Record<NavIcon, typeof LayoutDashboard> = {
@@ -109,6 +110,7 @@ export function Shell({
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopOpen, setDesktopOpen] = useState(true);
+  const [liveBadges, setLiveBadges] = useState<Record<string, number | string | null>>({});
 
   useEffect(() => {
     try {
@@ -120,6 +122,71 @@ export function Shell({
       // ignore
     }
   }, []);
+
+  // Track module visit on pathname change and clear badge for the active module
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("coachgenie_module_visits");
+      const visits: Record<string, number> = stored ? JSON.parse(stored) : {};
+
+      const matched = nav.find((item) =>
+        item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`)
+      );
+
+      if (matched && matched.href !== "/app" && matched.href !== "/platform") {
+        visits[matched.href] = Date.now();
+        localStorage.setItem("coachgenie_module_visits", JSON.stringify(visits));
+        setLiveBadges((prev) => ({ ...prev, [matched.href]: 0 }));
+      }
+    } catch {
+      // ignore
+    }
+  }, [pathname, nav]);
+
+  // Live polling for badge updates
+  useEffect(() => {
+    if (area !== "app") return;
+
+    let mounted = true;
+    const fetchLiveBadges = async () => {
+      try {
+        let visits: Record<string, number> = {};
+        try {
+          const stored = localStorage.getItem("coachgenie_module_visits");
+          if (stored) visits = JSON.parse(stored);
+        } catch {}
+
+        const freshBadges = await getLiveModuleBadgesAction(visits);
+        if (mounted) {
+          const matched = nav.find((item) =>
+            item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`)
+          );
+          if (matched && matched.href !== "/app") {
+            freshBadges[matched.href] = 0;
+          }
+          setLiveBadges(freshBadges);
+        }
+      } catch (err) {
+        console.error("[shell] Failed to refresh live badges", err);
+      }
+    };
+
+    void fetchLiveBadges();
+    const interval = setInterval(fetchLiveBadges, 30_000);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void fetchLiveBadges();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [area, pathname, nav]);
 
   function toggleSidebar() {
     if (typeof window !== "undefined" && window.innerWidth < 1024) {
@@ -150,16 +217,27 @@ export function Shell({
     nav.find((item) => (item.exact ? pathname === item.href : pathname.startsWith(item.href))) ?? nav[0];
 
   const renderNav = (onNavigate?: () => void) =>
-    nav.map((item, index) => (
-      <div key={item.href}>
-        {(index === 0 || nav[index - 1].section !== item.section) && (
-          <p className="mb-1.5 mt-5 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted-2)]">
-            {item.section}
-          </p>
-        )}
-        <NavLink item={item} pathname={pathname} onNavigate={onNavigate} />
-      </div>
-    ));
+    nav.map((item, index) => {
+      const effectiveBadge = liveBadges[item.href] !== undefined ? liveBadges[item.href] : item.badge;
+      return (
+        <div key={item.href}>
+          {(index === 0 || nav[index - 1].section !== item.section) && (
+            <p className="mb-1.5 mt-5 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--muted-2)]">
+              {item.section}
+            </p>
+          )}
+          <NavLink
+            item={item}
+            pathname={pathname}
+            badgeCount={effectiveBadge}
+            onNavigate={() => {
+              setLiveBadges((prev) => ({ ...prev, [item.href]: 0 }));
+              onNavigate?.();
+            }}
+          />
+        </div>
+      );
+    });
   const navTree = renderNav();
 
   return (
@@ -286,15 +364,22 @@ export function Shell({
 function NavLink({
   item,
   pathname,
+  badgeCount,
   onNavigate,
 }: {
   item: NavItem;
   pathname: string;
+  badgeCount?: number | string | null;
   onNavigate?: () => void;
 }) {
   const Icon = icons[item.icon];
   const active = item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`);
-  const hasBadge = item.badge !== undefined && item.badge !== null && item.badge !== 0;
+  const effectiveBadge = badgeCount !== undefined ? badgeCount : item.badge;
+  const numBadge = typeof effectiveBadge === "number" ? effectiveBadge : Number(effectiveBadge);
+  const hasBadge =
+    effectiveBadge !== undefined &&
+    effectiveBadge !== null &&
+    (typeof effectiveBadge === "number" ? effectiveBadge > 0 : !isNaN(numBadge) ? numBadge > 0 : Boolean(effectiveBadge));
 
   return (
     <Link
@@ -310,9 +395,9 @@ function NavLink({
       {hasBadge && (
         <span
           className="inline-flex h-4.5 min-w-4.5 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-sm transition-transform duration-150 group-hover:scale-105"
-          title={`${item.badge} recently updated / pending`}
+          title={`${effectiveBadge} new update${!isNaN(numBadge) && numBadge > 1 ? "s" : ""}`}
         >
-          {typeof item.badge === "number" && item.badge > 99 ? "99+" : item.badge}
+          {!isNaN(numBadge) && numBadge > 99 ? "99+" : effectiveBadge}
         </span>
       )}
     </Link>

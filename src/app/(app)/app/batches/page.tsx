@@ -174,23 +174,32 @@ export default async function BatchesPage({
           value={num(totalBatches)}
           icon={<Layers className="size-4" />}
           sub={`${activeBatches} currently active`}
+          href="/app/batches"
+          active={!statusFilter}
         />
         <StatCard
           label="Active Batches"
           value={num(activeBatches)}
           icon={<CheckCircle2 className="size-4 text-[var(--success)]" />}
+          tone="success"
+          href="/app/batches?status=ACTIVE"
+          active={statusFilter === "ACTIVE"}
         />
         <StatCard
           label="Active Enrollments"
           value={num(totalActiveEnrollments)}
           icon={<GraduationCap className="size-4 text-[var(--brand)]" />}
+          tone="brand"
           sub="Across all batches"
+          href="/app/students"
         />
         <StatCard
           label="Available Capacity"
           value={num(availableCapacity)}
           icon={<Users className="size-4 text-[var(--info)]" />}
+          tone="info"
           sub={`Of ${num(activeCapSum)} active seats`}
+          href="/app/batches?status=ACTIVE"
         />
       </div>
 

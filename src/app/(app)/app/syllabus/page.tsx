@@ -174,6 +174,8 @@ export default async function SyllabusPage({
           sub={`${metrics.activeSyllabuses} active`}
           tone="brand"
           icon={<BookOpen className="size-4" />}
+          href="/app/syllabus"
+          active={!statusFilter}
         />
         <StatCard
           label="Chapters Defined"
@@ -181,6 +183,7 @@ export default async function SyllabusPage({
           sub={`${metrics.totalTopics} total topics`}
           tone="neutral"
           icon={<Layers className="size-4" />}
+          href="/app/syllabus/reports"
         />
         <StatCard
           label="Completed Topics"
@@ -188,6 +191,8 @@ export default async function SyllabusPage({
           sub={`${metrics.completionRate}% syllabus progress`}
           tone="success"
           icon={<CheckCircle2 className="size-4" />}
+          href="/app/syllabus?status=COMPLETED"
+          active={statusFilter === "COMPLETED"}
         />
         <StatCard
           label="In-Progress"
@@ -195,6 +200,8 @@ export default async function SyllabusPage({
           sub={`${metrics.pendingTopics} pending`}
           tone="warning"
           icon={<Clock className="size-4" />}
+          href="/app/syllabus?status=ACTIVE"
+          active={statusFilter === "ACTIVE"}
         />
         <StatCard
           label="Delayed Topics"
@@ -202,6 +209,7 @@ export default async function SyllabusPage({
           sub={metrics.delayedTopics > 0 ? "Past scheduled date" : "On schedule"}
           tone={metrics.delayedTopics > 0 ? "danger" : "success"}
           icon={<AlertTriangle className="size-4" />}
+          href="/app/syllabus/reports"
         />
       </div>
 

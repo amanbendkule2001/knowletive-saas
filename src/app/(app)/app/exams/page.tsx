@@ -166,6 +166,8 @@ export default async function ExamsPage({
           sub="All academic levels"
           icon={<FileText className="size-4" />}
           tone="brand"
+          href="/app/exams"
+          active={!statusFilter}
         />
         <StatCard
           label="Scheduled"
@@ -173,6 +175,8 @@ export default async function ExamsPage({
           sub="Upcoming assessments"
           icon={<Calendar className="size-4" />}
           tone="warning"
+          href="/app/exams?status=SCHEDULED"
+          active={statusFilter === "SCHEDULED"}
         />
         <StatCard
           label="Evaluated"
@@ -180,6 +184,8 @@ export default async function ExamsPage({
           sub="Awaiting publication"
           icon={<CheckCircle2 className="size-4" />}
           tone="info"
+          href="/app/exams?status=EVALUATED"
+          active={statusFilter === "EVALUATED"}
         />
         <StatCard
           label="Published"
@@ -187,6 +193,8 @@ export default async function ExamsPage({
           sub="Report cards issued"
           icon={<Award className="size-4" />}
           tone="success"
+          href="/app/exams?status=PUBLISHED"
+          active={statusFilter === "PUBLISHED"}
         />
         <StatCard
           label="Active Enrollments"
@@ -194,6 +202,7 @@ export default async function ExamsPage({
           sub="Student candidates"
           icon={<Users className="size-4" />}
           tone="neutral"
+          href="/app/exams/reports"
         />
       </div>
 
@@ -327,12 +336,20 @@ export default async function ExamsPage({
                         {/* Examination Name & Details */}
                         <td className="py-3 px-4">
                           <div className="space-y-1">
-                            <Link
-                              href={`/app/exams/${exam.id}`}
-                              className="font-semibold text-foreground hover:text-[var(--brand)] transition-colors line-clamp-1"
-                            >
-                              {exam.title}
-                            </Link>
+                            <div className="flex items-center gap-1.5">
+                              <Link
+                                href={`/app/exams/${exam.id}`}
+                                className="font-semibold text-foreground hover:text-[var(--brand)] transition-colors line-clamp-1"
+                              >
+                                {exam.title}
+                              </Link>
+                              {Date.now() - new Date(exam.createdAt).getTime() < 48 * 3600 * 1000 && (
+                                <span className="inline-flex items-center gap-1 rounded bg-[var(--brand-soft)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[var(--brand)]">
+                                  <span className="size-1 rounded-full bg-[var(--brand)] animate-pulse" />
+                                  New
+                                </span>
+                              )}
+                            </div>
                             <div className="flex flex-wrap items-center gap-1.5">
                               <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-muted font-medium">
                                 {exam.code}

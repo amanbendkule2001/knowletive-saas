@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { ArrowUpRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type Tone = "neutral" | "brand" | "success" | "warning" | "danger" | "info";
@@ -134,6 +135,9 @@ export function StatCard({
   icon,
   tone = "brand",
   href,
+  active = false,
+  onClick,
+  className,
 }: {
   label: string;
   value: ReactNode;
@@ -141,15 +145,41 @@ export function StatCard({
   icon?: ReactNode;
   tone?: Tone;
   href?: string;
+  active?: boolean;
+  onClick?: () => void;
+  className?: string;
 }) {
+  const isClickable = Boolean(href || onClick);
+
   const inner = (
-    <div className="card card-hover h-full p-4">
+    <div
+      className={cn(
+        "card h-full p-4 transition-all duration-200 relative overflow-hidden",
+        isClickable && "card-hover cursor-pointer group active:scale-[0.98]",
+        isClickable && "hover:border-[var(--brand)] hover:shadow-md hover:-translate-y-0.5",
+        active && "ring-2 ring-[var(--brand)] border-[var(--brand)] bg-[var(--surface-hover)] shadow-sm",
+        className
+      )}
+    >
       <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-medium text-muted">{label}</p>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <p
+            className={cn(
+              "text-xs font-medium text-muted transition-colors truncate",
+              isClickable && "group-hover:text-[var(--text)]"
+            )}
+          >
+            {label}
+          </p>
+          {isClickable && (
+            <ArrowUpRight className="size-3 text-muted/40 group-hover:text-[var(--brand)] group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all shrink-0" />
+          )}
+        </div>
         {icon && (
           <span
             className={cn(
-              "grid size-8 place-items-center rounded-lg",
+              "grid size-8 place-items-center rounded-lg transition-transform duration-200 shrink-0",
+              isClickable && "group-hover:scale-110",
               tone === "brand" && "bg-[var(--brand-soft)] text-[var(--brand)]",
               tone === "success" && "bg-[var(--success-soft)] text-[var(--success)]",
               tone === "warning" && "bg-[var(--warning-soft)] text-[var(--warning)]",
@@ -162,11 +192,42 @@ export function StatCard({
           </span>
         )}
       </div>
-      <p className="mt-2 text-2xl font-semibold tracking-tight tabular-nums">{value}</p>
-      {sub && <p className="mt-1 text-xs text-muted">{sub}</p>}
+      <p
+        className={cn(
+          "mt-2 text-2xl font-semibold tracking-tight tabular-nums transition-colors",
+          isClickable && "group-hover:text-[var(--brand)]"
+        )}
+      >
+        {value}
+      </p>
+      {sub && <p className="mt-1 text-xs text-muted truncate">{sub}</p>}
     </div>
   );
-  return href ? <Link href={href} className="block h-full">{inner}</Link> : inner;
+
+  if (href) {
+    return (
+      <Link
+        href={href}
+        className="block h-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] rounded-xl"
+      >
+        {inner}
+      </Link>
+    );
+  }
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="block w-full text-left h-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] rounded-xl"
+      >
+        {inner}
+      </button>
+    );
+  }
+
+  return inner;
 }
 
 export function Avatar({

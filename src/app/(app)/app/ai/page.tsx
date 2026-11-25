@@ -101,6 +101,7 @@ export default async function AiStudioPage({
           sub={`of ${num(usage.limit)} on ${plan.name}`}
           icon={<Sparkles className="size-4" />}
           tone={usage.remaining > 0 ? "brand" : "danger"}
+          href="/app/billing"
         />
         <StatCard
           label="Used this month"
@@ -108,6 +109,7 @@ export default async function AiStudioPage({
           sub={`Resets ${date(nextReset)}`}
           icon={<CircleGauge className="size-4" />}
           tone={usage.used > usage.limit * 0.85 ? "warning" : "neutral"}
+          href="/app/billing"
         />
         <StatCard
           label="Generations"
@@ -115,12 +117,14 @@ export default async function AiStudioPage({
           sub={`${succeeded} succeeded · ${failed} failed`}
           icon={<Wand2 className="size-4" />}
           tone="info"
+          href="#history"
         />
         <StatCard
           label="Modules available"
           value={num(AI_FEATURES.length)}
           sub="report cards, lessons, fees and more"
           icon={<Bot className="size-4" />}
+          href="#generator"
         />
       </div>
 
@@ -146,9 +150,10 @@ export default async function AiStudioPage({
         </Callout>
       )}
 
-      <Card>
-        <CardHeader
-          title="Generate a draft"
+      <div id="generator" className="scroll-mt-4">
+        <Card>
+          <CardHeader
+            title="Generate a draft"
           description="Pick a module, add the context only you know, and review the output before it leaves the school."
           action={<Sparkles className="size-4 text-[var(--brand)]" />}
         />
@@ -167,6 +172,7 @@ export default async function AiStudioPage({
           )}
         </div>
       </Card>
+      </div>
 
       {selectedJob && (
         <Card>
@@ -228,7 +234,7 @@ export default async function AiStudioPage({
         </Card>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[1.5fr_1fr]" id="history">
         <Card>
           <CardHeader
             title="Recent generations"

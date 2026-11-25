@@ -359,14 +359,25 @@ export default async function FeesPage({
       key: "invoice",
       header: "Invoice",
       mobile: "title",
-      render: (row) => (
-        <Link href={`/app/fees/${row.id}`} className="group block min-w-0">
-          <span className="block truncate font-mono text-[12px] font-medium group-hover:underline">
-            {row.number}
-          </span>
-          <span className="block truncate text-[11px] text-muted">{row.title}</span>
-        </Link>
-      ),
+      render: (row) => {
+        const isRecent = Date.now() - new Date(row.createdAt).getTime() < 48 * 3600 * 1000;
+        return (
+          <Link href={`/app/fees/${row.id}`} className="group block min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate font-mono text-[12px] font-medium group-hover:underline">
+                {row.number}
+              </span>
+              {isRecent && (
+                <span className="inline-flex items-center gap-1 rounded bg-[var(--brand-soft)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[var(--brand)]">
+                  <span className="size-1 rounded-full bg-[var(--brand)] animate-pulse" />
+                  New
+                </span>
+              )}
+            </div>
+            <span className="block truncate text-[11px] text-muted">{row.title}</span>
+          </Link>
+        );
+      },
     },
     {
       key: "student",
@@ -484,6 +495,8 @@ export default async function FeesPage({
           value={money(billedTotal)}
           sub={`${num(allCount)} invoices · active`}
           icon={<ReceiptText className="size-4" />}
+          href="/app/fees?tab=invoices"
+          active={currentTab === "invoices" && !status}
         />
         <StatCard
           label="Collected This Month"
@@ -491,6 +504,8 @@ export default async function FeesPage({
           sub={`Since ${date(startOfMonth(now))}`}
           icon={<Wallet className="size-4" />}
           tone="success"
+          href="/app/fees?tab=payments"
+          active={currentTab === "payments"}
         />
         <StatCard
           label="Outstanding Dues"
@@ -498,6 +513,8 @@ export default async function FeesPage({
           sub={`${num(countFor("PENDING") + countFor("PARTIAL") + countFor("OVERDUE"))} open bills`}
           icon={<CircleDollarSign className="size-4" />}
           tone={outstanding > 0 ? "warning" : "success"}
+          href="/app/fees?tab=invoices&status=PENDING"
+          active={status === "PENDING"}
         />
         <StatCard
           label="Past Due / Overdue"
@@ -505,6 +522,8 @@ export default async function FeesPage({
           sub={`${num(overdue._count._all)} overdue accounts`}
           icon={<TriangleAlert className="size-4" />}
           tone={overdueAmount > 0 ? "danger" : "success"}
+          href="/app/fees?tab=invoices&status=OVERDUE"
+          active={status === "OVERDUE"}
         />
       </div>
 

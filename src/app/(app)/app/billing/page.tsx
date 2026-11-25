@@ -183,6 +183,7 @@ export default async function BillingPage({
               : "Choose a plan to activate the workspace"
           }
           icon={<CreditCard className="size-4" />}
+          href="#plans"
         />
         <StatCard
           label="Students"
@@ -190,6 +191,7 @@ export default async function BillingPage({
           sub={plan ? `of ${num(plan.maxStudents)} allowed` : "No plan limit"}
           icon={<CircleDollarSign className="size-4" />}
           tone={plan && usage.students / plan.maxStudents > 0.9 ? "warning" : "neutral"}
+          href="/app/students"
         />
         <StatCard
           label="AI credits"
@@ -197,6 +199,7 @@ export default async function BillingPage({
           sub={plan ? `${num(aiUsage?.used ?? 0)} of ${num(plan.aiCreditsMonthly)} used` : "—"}
           icon={<Sparkles className="size-4" />}
           tone={(aiUsage?.remaining ?? 0) > 0 ? "brand" : "danger"}
+          href="/app/ai"
         />
         <StatCard
           label="Open invoices"
@@ -204,6 +207,7 @@ export default async function BillingPage({
           sub={openInvoices.length ? `${money(outstanding)} outstanding` : "Nothing due"}
           icon={<ReceiptText className="size-4" />}
           tone={openInvoices.length ? "warning" : "success"}
+          href="/app/fees?tab=invoices"
         />
       </div>
 

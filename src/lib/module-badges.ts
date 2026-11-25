@@ -2,12 +2,30 @@ import { db } from "@/lib/db";
 
 export type ModuleBadges = Record<string, number>;
 
-export async function getModuleBadges(tenantId: string): Promise<ModuleBadges> {
+export async function getModuleBadges(
+  tenantId: string,
+  visits?: Record<string, number | string | null>
+): Promise<ModuleBadges> {
   const badges: ModuleBadges = {};
   const now = new Date();
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 86_400_000);
-  const today = new Date(now);
-  today.setUTCHours(0, 0, 0, 0);
+  const defaultRecentThreshold = new Date(now.getTime() - 48 * 3600 * 1000); // 48 hours
+
+  const resolveThreshold = (path: string): Date => {
+    const raw = visits?.[path];
+    if (raw) {
+      const parsed = typeof raw === "number" ? new Date(raw) : new Date(raw);
+      if (!isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+    return defaultRecentThreshold;
+  };
+
+  const leadsThreshold = resolveThreshold("/app/leads");
+  const studentsThreshold = resolveThreshold("/app/students");
+  const feesThreshold = resolveThreshold("/app/fees");
+  const examsThreshold = resolveThreshold("/app/exams");
+  const announcementsThreshold = resolveThreshold("/app/announcements");
 
   try {
     const [
@@ -20,31 +38,31 @@ export async function getModuleBadges(tenantId: string): Promise<ModuleBadges> {
       db.lead.count({
         where: {
           tenantId,
-          status: { in: ["NEW", "CONTACTED", "FOLLOW_UP", "INTERESTED"] },
+          updatedAt: { gt: leadsThreshold },
         },
       }),
       db.feeInvoice.count({
         where: {
           tenantId,
-          status: { in: ["PENDING", "OVERDUE", "PARTIAL"] },
+          createdAt: { gt: feesThreshold },
         },
       }),
       db.student.count({
         where: {
           tenantId,
-          createdAt: { gte: sevenDaysAgo },
+          createdAt: { gt: studentsThreshold },
         },
       }),
       db.examination.count({
         where: {
           tenantId,
-          status: { in: ["SCHEDULED", "IN_PROGRESS"] },
+          updatedAt: { gt: examsThreshold },
         },
       }),
       db.announcement.count({
         where: {
           tenantId,
-          publishedAt: { gte: sevenDaysAgo },
+          publishedAt: { gt: announcementsThreshold },
         },
       }),
     ]);

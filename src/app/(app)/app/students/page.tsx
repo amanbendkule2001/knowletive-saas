@@ -172,23 +172,34 @@ export default async function StudentsPage({
       key: "student",
       header: "Student",
       mobile: "title",
-      render: (student) => (
-        <Link href={`/app/students/${student.id}`} className="group flex items-center gap-2.5">
-          <Avatar
-            name={`${student.firstName} ${student.lastName}`}
-            size={32}
-            color={ctx.tenant.accentColor}
-          />
-          <span className="min-w-0">
-            <span className="block truncate font-medium group-hover:underline">
-              {student.firstName} {student.lastName}
+      render: (student) => {
+        const isRecent = Date.now() - new Date(student.createdAt).getTime() < 48 * 3600 * 1000;
+        return (
+          <Link href={`/app/students/${student.id}`} className="group flex items-center gap-2.5">
+            <Avatar
+              name={`${student.firstName} ${student.lastName}`}
+              size={32}
+              color={ctx.tenant.accentColor}
+            />
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5">
+                <span className="truncate font-medium group-hover:underline">
+                  {student.firstName} {student.lastName}
+                </span>
+                {isRecent && (
+                  <span className="inline-flex items-center gap-1 rounded bg-[var(--brand-soft)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[var(--brand)]">
+                    <span className="size-1 rounded-full bg-[var(--brand)] animate-pulse" />
+                    New
+                  </span>
+                )}
+              </span>
+              <span className="block truncate font-mono text-[10px] text-muted">
+                {student.admissionNo}
+              </span>
             </span>
-            <span className="block truncate font-mono text-[10px] text-muted">
-              {student.admissionNo}
-            </span>
-          </span>
-        </Link>
-      ),
+          </Link>
+        );
+      },
     },
     {
       key: "class",

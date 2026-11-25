@@ -249,7 +249,7 @@ export default async function AppOverview() {
             sub={`Since ${date(monthStart)}`}
             icon={<Wallet className="size-4" />}
             tone="success"
-            href="/app/fees"
+            href="/app/fees?tab=payments"
           />
         )}
         {canReadFees && (
@@ -259,7 +259,7 @@ export default async function AppOverview() {
             sub={`${outstandingInvoices.length} invoices · ${overdueCount} overdue`}
             icon={<CircleDollarSign className="size-4" />}
             tone={outstanding > 0 ? "warning" : "success"}
-            href="/app/fees?status=OVERDUE"
+            href="/app/fees?tab=invoices&status=OVERDUE"
           />
         )}
       </div>

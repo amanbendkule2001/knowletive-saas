@@ -23,10 +23,73 @@ export function quote(plan: Plan, cycle: BillingCycle) {
   return { subtotal, tax, total: subtotal + tax };
 }
 
-async function nextInvoiceNumber() {
+export async function nextInvoiceNumber() {
   const year = new Date().getFullYear();
   const count = await db.invoice.count({ where: { number: { startsWith: `INV-${year}-` } } });
   return `INV-${year}-${String(count + 1).padStart(4, "0")}`;
+}
+
+/** Raises a custom platform invoice with configurable charges and selectable GST rate. */
+export async function createCustomInvoiceWithGst({
+  tenantId,
+  chargesPaise,
+  gstRate,
+  description,
+  dueDays = 7,
+  notes,
+}: {
+  tenantId: string;
+  chargesPaise: number;
+  gstRate: number;
+  description?: string;
+  dueDays?: number;
+  notes?: string;
+}) {
+  const subtotal = Math.max(0, chargesPaise);
+  const tax = Math.max(0, Math.round(subtotal * gstRate));
+  const total = subtotal + tax;
+  const now = new Date();
+  const periodEnd = addMonths(now, 1);
+  const dueAt = addDays(now, dueDays);
+
+  const sub = await db.tenantSubscription.findUnique({
+    where: { tenantId },
+    include: { plan: true },
+  });
+
+  const gstPercentage = Number((gstRate * 100).toFixed(2));
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await db.invoice.create({
+        data: {
+          number: await nextInvoiceNumber(),
+          tenantId,
+          subscriptionId: sub?.id,
+          planId: sub?.planId,
+          status: "OPEN",
+          currency: "INR",
+          subtotal,
+          tax,
+          total,
+          periodStart: now,
+          periodEnd,
+          dueAt,
+          notes: notes || null,
+          lines: [
+            {
+              description: description || "Platform service charges",
+              amount: subtotal,
+            },
+            ...(tax > 0 ? [{ description: `GST (${gstPercentage}%)`, amount: tax }] : []),
+          ],
+        },
+      });
+    } catch (error) {
+      if (attempt === 2) throw error;
+    }
+  }
+  throw new Error("Could not allocate an invoice number");
 }
 
 /** Raises a platform subscription invoice for the next billing period. */
