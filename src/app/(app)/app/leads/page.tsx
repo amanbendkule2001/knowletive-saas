@@ -159,6 +159,7 @@ export default async function LeadsPage({
           </Link>
           <p className="text-xs text-muted">
             {lead.classInterested ? `Interested in ${lead.classInterested}` : "Class not specified"}
+            {(lead as any).board ? ` · ${(lead as any).board}` : ""}
             {lead.academicYear ? ` · ${lead.academicYear.name}` : ""}
           </p>
         </div>

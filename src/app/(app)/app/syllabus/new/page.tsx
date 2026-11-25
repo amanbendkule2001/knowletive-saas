@@ -5,6 +5,7 @@ import { requireTenantPermission } from "@/lib/rbac";
 import { PageHeader } from "@/components/ui/primitives";
 import { createSyllabusAction } from "@/actions/syllabus";
 import { getOrProvisionAcademicYears } from "@/lib/academic-years";
+import { SyllabusNameCodeFields } from "./syllabus-name-code-fields";
 
 export const metadata = { title: "Create Syllabus — SyllabusTrack" };
 
@@ -64,30 +65,7 @@ export default async function NewSyllabusPage() {
             1. Core Syllabus Metadata
           </h3>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="name" className="label text-xs">Syllabus Title *</label>
-              <input
-                id="name"
-                name="name"
-                required
-                placeholder="e.g. Class 10 Physics (CBSE)"
-                className="input text-xs w-full mt-1"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="code" className="label text-xs">Syllabus Code *</label>
-              <input
-                id="code"
-                name="code"
-                required
-                placeholder="e.g. SYL-PHY-10A"
-                className="input text-xs w-full mt-1"
-              />
-              <p className="text-[11px] text-muted mt-1">Unique identifier within your institute.</p>
-            </div>
-          </div>
+          <SyllabusNameCodeFields />
 
           <div>
             <label htmlFor="description" className="label text-xs">Description / Learning Scope (optional)</label>

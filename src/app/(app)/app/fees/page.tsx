@@ -44,6 +44,7 @@ import { date, money, num, startOfMonth } from "@/lib/format";
 import { safeInt } from "@/lib/utils";
 import { DemoCheckoutButton } from "@/components/portal/demo-checkout-button";
 import { StudentReceiptModal, type ReceiptData } from "@/components/portal/student-receipt-modal";
+import { QuickCollectFeeModal } from "@/components/app/quick-collect-fee-modal";
 
 export const metadata = { title: "Fees & Payment Gateway" };
 
@@ -438,9 +439,20 @@ export default async function FeesPage({
       align: "right",
       mobile: "hidden",
       render: (row) => (
-        <Link href={`/app/fees/${row.id}`} className="link text-xs">
-          Open
-        </Link>
+        <div className="flex items-center justify-end gap-2">
+          {row.status !== "PAID" && row.status !== "WAIVED" && (
+            <QuickCollectFeeModal
+              invoiceId={row.id}
+              invoiceNumber={row.number}
+              studentName={`${row.student.firstName} ${row.student.lastName}`}
+              admissionNo={row.student.admissionNo}
+              outstandingPaise={row.amount - row.paidAmount}
+            />
+          )}
+          <Link href={`/app/fees/${row.id}`} className="link text-xs">
+            Open
+          </Link>
+        </div>
       ),
     },
   ];

@@ -177,7 +177,7 @@ export async function saveAttendanceRegisterAction(formData: FormData): Promise<
 
 // ─────────────────────────────── Fees ───────────────────────────────
 
-async function nextFeeNumber(tenantId: string, slug: string) {
+export async function nextFeeNumber(tenantId: string, slug: string) {
   const prefix = `${slug.slice(0, 3).toUpperCase()}-FEE`;
   const year = new Date().getFullYear();
   let n = (await db.feeInvoice.count({ where: { tenantId } })) + 1;

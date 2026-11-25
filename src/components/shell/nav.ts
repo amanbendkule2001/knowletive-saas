@@ -23,6 +23,7 @@ export type NavItem = {
   permission?: string;
   section: string;
   exact?: boolean;
+  badge?: number | string | null;
 };
 
 export const platformNav: NavItem[] = [

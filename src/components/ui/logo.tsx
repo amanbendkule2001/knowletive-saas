@@ -34,7 +34,7 @@ export function Logo({
         <span className="min-w-0">
           <span className="block truncate text-[15px] font-semibold tracking-tight">Coachgenie</span>
           {subtitle && (
-            <span className="block truncate text-[10px] font-medium uppercase tracking-[0.12em] text-muted">
+            <span className="block truncate text-[11px] text-muted">
               {subtitle}
             </span>
           )}

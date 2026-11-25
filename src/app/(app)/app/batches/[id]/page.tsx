@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {
   ArrowLeft,
+  BookOpen,
   GraduationCap,
   History,
   Settings,
@@ -96,6 +97,10 @@ export default async function BatchDetailPage({
     include: {
       academicYear: true,
       subject: true,
+      syllabusTracks: {
+        include: { subject: true },
+        orderBy: { name: "asc" },
+      },
       teachers: {
         include: {
           teacher: {
@@ -528,10 +533,25 @@ export default async function BatchDetailPage({
             </div>
 
             <div>
-              <span className="text-muted block text-[11px]">Subject</span>
-              <span className="font-medium text-foreground">
-                {batch.subject ? `${batch.subject.name} (${batch.subject.code || "N/A"})` : "General / All-Subject"}
-              </span>
+              <span className="text-muted block text-[11px] mb-1">Subjects & Curriculum</span>
+              {batch.syllabusTracks.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {batch.syllabusTracks.map((st) => (
+                    <Link
+                      key={st.id}
+                      href={`/app/syllabus/${st.id}`}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[var(--surface-hover)] border border-[var(--border)] text-[11px] font-medium text-[var(--brand)] hover:underline"
+                    >
+                      <BookOpen className="size-3" />
+                      <span>{st.subject.name}</span>
+                    </Link>
+                  ))}
+                </div>
+              ) : (
+                <span className="font-medium text-foreground">
+                  {batch.subject ? `${batch.subject.name} (${batch.subject.code || "N/A"})` : "General / Multi-Subject"}
+                </span>
+              )}
             </div>
 
             <div>

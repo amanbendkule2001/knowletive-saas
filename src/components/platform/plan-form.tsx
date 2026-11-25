@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import type { Plan } from "@prisma/client";
 import { ActionForm } from "@/components/ui/action-form";
 import { Field, FormGrid } from "@/components/ui/form-field";
@@ -18,6 +21,21 @@ export function PlanForm({
   action: (state: FormState, formData: FormData) => Promise<FormState>;
 }) {
   const selected = new Set(plan?.features ?? []);
+  const [name, setName] = useState(plan?.name ?? "");
+  const [key, setKey] = useState(plan?.key ?? "");
+  const [isKeyManual, setIsKeyManual] = useState(false);
+
+  const handleNameChange = (val: string) => {
+    setName(val);
+    if (!plan && !isKeyManual) {
+      const slug = val
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 30);
+      setKey(slug);
+    }
+  };
 
   return (
     <ActionForm
@@ -30,19 +48,31 @@ export function PlanForm({
 
       <FormGrid>
         <Field label="Plan name" htmlFor="name" required>
-          <input id="name" name="name" required defaultValue={plan?.name} className="input" placeholder="Growth" />
+          <input
+            id="name"
+            name="name"
+            required
+            value={name}
+            onChange={(e) => handleNameChange(e.target.value)}
+            className="input"
+            placeholder="Growth"
+          />
         </Field>
         <Field
           label="Plan key"
           htmlFor="key"
           required
-          hint="Stable identifier used by the billing provider. Lowercase, no spaces."
+          hint={!plan ? "Auto-generated slug. You can customize anytime." : "Stable identifier used by the billing provider. Lowercase, no spaces."}
         >
           <input
             id="key"
             name="key"
             required
-            defaultValue={plan?.key}
+            value={key}
+            onChange={(e) => {
+              setKey(e.target.value.toLowerCase());
+              setIsKeyManual(true);
+            }}
             className="input font-mono"
             placeholder="growth"
             pattern="[a-z0-9-]{2,30}"

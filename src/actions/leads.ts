@@ -8,6 +8,7 @@ import { authorizeTenantWrite } from "@/lib/rbac";
 import { resolveUserBranchScope } from "@/lib/branch";
 import { writeAudit } from "@/lib/audit";
 import { assertStudentCapacityTx } from "@/lib/entitlements";
+import { nextFeeNumber } from "@/actions/operations";
 import { fieldErrors, type FormState } from "@/lib/validation";
 import { parseCsv, CsvParseError } from "@/lib/csv";
 import { STAFF_ROLE_KEYS } from "@/lib/catalog";
@@ -56,6 +57,7 @@ export async function createLeadAction(_prev: FormState, formData: FormData): Pr
     guardianPhone: formData.get("guardianPhone"),
     guardianEmail: formData.get("guardianEmail"),
     classInterested: formData.get("classInterested"),
+    board: formData.get("board"),
     academicYearId: formData.get("academicYearId"),
     source: formData.get("source") || "WALK_IN",
     status: (formData.get("status") as LeadStatus) || "NEW",
@@ -125,6 +127,7 @@ export async function createLeadAction(_prev: FormState, formData: FormData): Pr
           guardianPhone: d.guardianPhone,
           guardianEmail: d.guardianEmail || null,
           classInterested: d.classInterested || null,
+          board: d.board || null,
           academicYearId,
           source: d.source || "WALK_IN",
           status: d.status,
@@ -218,6 +221,7 @@ export async function updateLeadAction(_prev: FormState, formData: FormData): Pr
     guardianPhone: formData.get("guardianPhone"),
     guardianEmail: formData.get("guardianEmail"),
     classInterested: formData.get("classInterested"),
+    board: formData.get("board"),
     academicYearId: formData.get("academicYearId"),
     source: formData.get("source") || existing.source,
     status: (formData.get("status") as LeadStatus) || existing.status,
@@ -252,6 +256,7 @@ export async function updateLeadAction(_prev: FormState, formData: FormData): Pr
           guardianPhone: d.guardianPhone,
           guardianEmail: d.guardianEmail || null,
           classInterested: d.classInterested || null,
+          board: d.board !== undefined ? (d.board || null) : ((existing as any).board || null),
           academicYearId: d.academicYearId || null,
           source: d.source || existing.source,
           status: d.status,
@@ -464,6 +469,7 @@ export async function convertLeadAction(_prev: FormState, formData: FormData): P
   if (!auth.ok) return { error: auth.error };
   const ctx = auth.ctx;
 
+  const rawSubjects = formData.getAll("subjectIds");
   const parsed = convertSchema.safeParse({
     leadId: formData.get("leadId"),
     admissionNo: formData.get("admissionNo"),
@@ -475,6 +481,12 @@ export async function convertLeadAction(_prev: FormState, formData: FormData): P
     address: formData.get("address"),
     classId: formData.get("classId"),
     sectionId: formData.get("sectionId"),
+    batchId: formData.get("batchId"),
+    teacherId: formData.get("teacherId"),
+    subjectIds: rawSubjects.length > 0 ? rawSubjects.map(String).filter(Boolean) : (formData.get("subjectIds") || undefined),
+    feeAmount: formData.get("feeAmount") || 0,
+    discountAmount: formData.get("discountAmount") || 0,
+    feeDueDate: formData.get("feeDueDate"),
   });
   if (!parsed.success) return fieldErrors(parsed.error);
 
@@ -548,7 +560,7 @@ export async function convertLeadAction(_prev: FormState, formData: FormData): P
       const student = await tx.student.create({
         data: {
           tenantId: ctx.tenant.id,
-          branchId: lead.branchId,
+          branchId: lead.branchId ?? branchScope.assignedBranchId ?? null,
           admissionNo: d.admissionNo,
           firstName: d.firstName,
           lastName: d.lastName,
@@ -571,7 +583,107 @@ export async function convertLeadAction(_prev: FormState, formData: FormData): P
         },
       });
 
-      // 9. UPDATE LEAD TO CONVERTED
+      // 9. ENROLL IN BATCH IF SELECTED
+      let selectedBatch: { id: string; name: string } | null = null;
+      if (d.batchId) {
+        const batch = await tx.batch.findFirst({
+          where: { id: d.batchId, tenantId: ctx.tenant.id },
+          select: { id: true, name: true, capacity: true },
+        });
+        if (batch) {
+          selectedBatch = batch;
+          await tx.batchStudent.create({
+            data: {
+              batchId: batch.id,
+              studentId: student.id,
+              status: "ACTIVE",
+            },
+          });
+          await tx.batchEnrollmentEvent.create({
+            data: {
+              batchId: batch.id,
+              studentId: student.id,
+              actorId: ctx.user.id,
+              actorName: ctx.user.name,
+              eventType: "ENROLLED",
+              reason: "Enrolled via Lead Conversion",
+            },
+          });
+        }
+      }
+
+      // 10. RESOLVE SUBJECTS & TEACHER NAMES FOR TRACKING
+      let subjectNames: string[] = [];
+      const subjectIdList = Array.isArray(d.subjectIds)
+        ? d.subjectIds
+        : (typeof d.subjectIds === "string" && d.subjectIds ? [d.subjectIds] : []);
+
+      if (subjectIdList.length > 0) {
+        const subs = await tx.subject.findMany({
+          where: { id: { in: subjectIdList }, tenantId: ctx.tenant.id },
+          select: { id: true, name: true },
+        });
+        subjectNames = subs.map((s) => s.name);
+      }
+
+      let assignedTeacherName = "";
+      if (d.teacherId) {
+        const teacher = await tx.membership.findFirst({
+          where: { id: d.teacherId, tenantId: ctx.tenant.id },
+          include: { user: true },
+        });
+        if (teacher) {
+          assignedTeacherName = teacher.user.name;
+        }
+      }
+
+      // 11. FEE INVOICE GENERATION & DISCOUNT TRACKING
+      const baseFee = Number(d.feeAmount) || 0;
+      const discount = Number(d.discountAmount) || 0;
+      const netFee = Math.max(0, baseFee - discount);
+      let createdInvoiceId: string | null = null;
+
+      if (baseFee > 0) {
+        const invoiceNumber = await nextFeeNumber(ctx.tenant.id, ctx.tenant.slug);
+        const today = new Date();
+        today.setUTCHours(0, 0, 0, 0);
+
+        let dueDate: Date;
+        if (d.feeDueDate) {
+          const parsedDue = new Date(d.feeDueDate);
+          dueDate = Number.isNaN(parsedDue.getTime()) ? new Date(today.getTime() + 14 * 86_400_000) : parsedDue;
+        } else {
+          dueDate = new Date(today.getTime() + 14 * 86_400_000);
+        }
+
+        const feeNotes = [
+          `Course/Admission Fee: ₹${baseFee.toLocaleString("en-IN")}`,
+          discount > 0 ? `Discount / Concession: ₹${discount.toLocaleString("en-IN")}` : null,
+          `Net Payable: ₹${netFee.toLocaleString("en-IN")}`,
+          selectedBatch ? `Batch: ${selectedBatch.name}` : null,
+          subjectNames.length > 0 ? `Subjects: ${subjectNames.join(", ")}` : null,
+          assignedTeacherName ? `Assigned Teacher: ${assignedTeacherName}` : null,
+        ].filter(Boolean).join(" | ");
+
+        const invoice = await tx.feeInvoice.create({
+          data: {
+            tenantId: ctx.tenant.id,
+            studentId: student.id,
+            branchId: student.branchId ?? branchScope.assignedBranchId ?? null,
+            number: invoiceNumber,
+            title: "Admission & Course Fees",
+            amount: Math.round(netFee * 100), // stored in paise
+            paidAmount: 0,
+            currency: "INR",
+            dueDate,
+            status: dueDate < today ? "OVERDUE" : "PENDING",
+            notes: feeNotes,
+          },
+        });
+        createdInvoiceId = invoice.id;
+      }
+
+      // 12. UPDATE LEAD TO CONVERTED
       await tx.lead.update({
         where: { id: lead.id },
         data: {
@@ -580,18 +692,38 @@ export async function convertLeadAction(_prev: FormState, formData: FormData): P
         },
       });
 
-      // 10. CREATE LEAD ACTIVITY RECORD
-      await tx.leadActivity.create({
-        data: {
-          tenantId: ctx.tenant.id,
-          leadId: lead.id,
-          actorId: ctx.user.id,
-          action: "CONVERTED",
-          notes: `Converted to Student (Admission No: ${d.admissionNo})`,
-        },
-      });
+      // 13. CREATE LEAD ACTIVITY RECORD (Safely resolving membership actor)
+      const activityNotes = [
+        `Converted to Student (Adm: ${d.admissionNo})`,
+        selectedBatch ? `Batch: ${selectedBatch.name}` : null,
+        assignedTeacherName ? `Teacher: ${assignedTeacherName}` : null,
+        subjectNames.length > 0 ? `Subjects: ${subjectNames.join(", ")}` : null,
+        baseFee > 0 ? `Fee: ₹${netFee.toLocaleString("en-IN")}${discount > 0 ? ` (after ₹${discount.toLocaleString("en-IN")} discount)` : ""}` : null,
+      ].filter(Boolean).join(" · ");
 
-      // 11. ATOMIC AUDIT LOG
+      let actorMembership = await tx.membership.findFirst({
+        where: { tenantId: ctx.tenant.id, userId: ctx.user.id },
+        select: { id: true },
+      });
+      if (!actorMembership) {
+        actorMembership = await tx.membership.findFirst({
+          where: { tenantId: ctx.tenant.id, status: "ACTIVE" },
+          select: { id: true },
+        });
+      }
+      if (actorMembership) {
+        await tx.leadActivity.create({
+          data: {
+            tenantId: ctx.tenant.id,
+            leadId: lead.id,
+            actorId: actorMembership.id,
+            action: "CONVERTED",
+            notes: activityNotes,
+          },
+        });
+      }
+
+      // 14. ATOMIC AUDIT LOG
       await writeAudit(
         {
           tenantId: ctx.tenant.id,
@@ -600,7 +732,17 @@ export async function convertLeadAction(_prev: FormState, formData: FormData): P
           action: "lead.convert",
           entity: "Student",
           entityId: student.id,
-          meta: { leadId: lead.id, admissionNo: d.admissionNo },
+          meta: {
+            leadId: lead.id,
+            admissionNo: d.admissionNo,
+            batchId: d.batchId || null,
+            teacherId: d.teacherId || null,
+            subjectIds: subjectIdList,
+            feeAmount: baseFee,
+            discountAmount: discount,
+            netFee,
+            invoiceId: createdInvoiceId,
+          },
         },
         tx
       );
@@ -617,6 +759,8 @@ export async function convertLeadAction(_prev: FormState, formData: FormData): P
   revalidatePath(`/app/leads/${d.leadId}`);
   revalidatePath("/app/students");
   revalidatePath(`/app/students/${createdStudentId}`);
+  revalidatePath("/app/fees");
+  revalidatePath("/app/batches");
   revalidatePath("/app");
   redirect(`/app/students/${createdStudentId}?converted_from_lead=1`);
 }

@@ -28,12 +28,15 @@ export async function createBatchAction(_prev: FormState, formData: FormData): P
   const ctx = auth.ctx;
 
   const rawTeacherIds = formData.getAll("teacherIds").map(String).filter(Boolean);
+  const rawSubjectIds = formData.getAll("subjectIds").map(String).filter(Boolean);
+  const primarySubjectId = (formData.get("subjectId") as string) || rawSubjectIds[0] || null;
 
   const parsed = createBatchSchema.safeParse({
     name: formData.get("name"),
     code: formData.get("code"),
     academicYearId: formData.get("academicYearId"),
-    subjectId: formData.get("subjectId") || null,
+    subjectId: primarySubjectId,
+    subjectIds: rawSubjectIds,
     capacity: formData.get("capacity") || 30,
     status: (formData.get("status") as BatchStatus) || "ACTIVE",
     startDate: formData.get("startDate") || null,
@@ -55,24 +58,40 @@ export async function createBatchAction(_prev: FormState, formData: FormData): P
     return { error: "Selected academic year does not belong to this institute." };
   }
 
-  // 2. Verify subject belongs to this tenant if provided
-  if (data.subjectId) {
-    const subject = await db.subject.findFirst({
-      where: { id: data.subjectId, tenantId: ctx.tenant.id },
-      select: { id: true },
+  // 2. Verify all subjects belong to this tenant
+  const validSubjectIds: string[] = [];
+  const subjectsToSync: { id: string; name: string; code?: string | null }[] = [];
+  if (data.subjectIds && data.subjectIds.length > 0) {
+    const subs = await db.subject.findMany({
+      where: { id: { in: data.subjectIds }, tenantId: ctx.tenant.id },
+      select: { id: true, name: true, code: true },
     });
-    if (!subject) {
-      return { error: "Selected subject does not belong to this institute." };
+    for (const s of subs) {
+      validSubjectIds.push(s.id);
+      subjectsToSync.push(s);
+    }
+  } else if (data.subjectId) {
+    const s = await db.subject.findFirst({
+      where: { id: data.subjectId, tenantId: ctx.tenant.id },
+      select: { id: true, name: true, code: true },
+    });
+    if (s) {
+      validSubjectIds.push(s.id);
+      subjectsToSync.push(s);
     }
   }
 
-  // 3. Check unique code per tenant
+  // 3. Check unique code per tenant with smart recommendation
   const existingCode = await db.batch.findUnique({
     where: { tenantId_code: { tenantId: ctx.tenant.id, code: data.code } },
     select: { id: true },
   });
   if (existingCode) {
-    return { error: `Batch code '${data.code}' is already in use in this institute.` };
+    const baseCode = data.code.replace(/-[A-Z0-9]$/, "");
+    return {
+      error: `Batch code '${data.code}' is already in use in this institute. Try '${baseCode}-B' or a customized code.`,
+      fieldErrors: { code: [`Code '${data.code}' is taken`] },
+    };
   }
 
   // 4. Verify teachers belong to this tenant and have authorized teaching/management role
@@ -102,7 +121,7 @@ export async function createBatchAction(_prev: FormState, formData: FormData): P
         data: {
           tenantId: ctx.tenant.id,
           academicYearId: data.academicYearId,
-          subjectId: data.subjectId || null,
+          subjectId: validSubjectIds[0] || null,
           name: data.name,
           code: data.code,
           capacity: data.capacity,
@@ -119,6 +138,34 @@ export async function createBatchAction(_prev: FormState, formData: FormData): P
           },
         },
       });
+
+      // Cross-Module Sync: Auto-provision SyllabusTrack for each subject covered by this batch
+      for (const sub of subjectsToSync) {
+        const subSlug = sub.code || sub.name.slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, "");
+        const trackCode = `SYL-${b.code}-${subSlug}`.slice(0, 30);
+
+        const existingTrack = await tx.syllabusTrack.findFirst({
+          where: { tenantId: ctx.tenant.id, code: trackCode },
+        });
+
+        if (!existingTrack) {
+          await tx.syllabusTrack.create({
+            data: {
+              tenantId: ctx.tenant.id,
+              academicYearId: data.academicYearId,
+              subjectId: sub.id,
+              batchId: b.id,
+              targetType: "BATCH",
+              name: `${b.name} - ${sub.name}`,
+              code: trackCode,
+              description: `Curriculum syllabus track for ${b.name} (${b.code}) — ${sub.name}`,
+              status: "ACTIVE",
+              startDate: toDate(data.startDate),
+              targetDate: toDate(data.endDate),
+            },
+          });
+        }
+      }
 
       await writeAudit(
         {
@@ -151,11 +198,15 @@ export async function updateBatchAction(batchId: string, _prev: FormState, formD
   if (!auth.ok) return { error: auth.error };
   const ctx = auth.ctx;
 
+  const rawSubjectIds = formData.getAll("subjectIds").map(String).filter(Boolean);
+  const primarySubjectId = (formData.get("subjectId") as string) || rawSubjectIds[0] || null;
+
   const parsed = updateBatchSchema.safeParse({
     name: formData.get("name"),
     code: formData.get("code"),
     academicYearId: formData.get("academicYearId"),
-    subjectId: formData.get("subjectId") || null,
+    subjectId: primarySubjectId,
+    subjectIds: rawSubjectIds,
     capacity: formData.get("capacity"),
     status: formData.get("status") as BatchStatus,
     startDate: formData.get("startDate") || null,
@@ -176,13 +227,25 @@ export async function updateBatchAction(batchId: string, _prev: FormState, formD
     return { error: "Selected academic year does not belong to this institute." };
   }
 
-  if (data.subjectId) {
-    const subject = await db.subject.findFirst({
-      where: { id: data.subjectId, tenantId: ctx.tenant.id },
-      select: { id: true },
+  const validSubjectIds: string[] = [];
+  const subjectsToSync: { id: string; name: string; code?: string | null }[] = [];
+  if (data.subjectIds && data.subjectIds.length > 0) {
+    const subs = await db.subject.findMany({
+      where: { id: { in: data.subjectIds }, tenantId: ctx.tenant.id },
+      select: { id: true, name: true, code: true },
     });
-    if (!subject) {
-      return { error: "Selected subject does not belong to this institute." };
+    for (const s of subs) {
+      validSubjectIds.push(s.id);
+      subjectsToSync.push(s);
+    }
+  } else if (data.subjectId) {
+    const s = await db.subject.findFirst({
+      where: { id: data.subjectId, tenantId: ctx.tenant.id },
+      select: { id: true, name: true, code: true },
+    });
+    if (s) {
+      validSubjectIds.push(s.id);
+      subjectsToSync.push(s);
     }
   }
 
@@ -221,7 +284,7 @@ export async function updateBatchAction(batchId: string, _prev: FormState, formD
           name: data.name,
           code: data.code,
           academicYearId: data.academicYearId,
-          subjectId: data.subjectId || null,
+          subjectId: validSubjectIds[0] || null,
           capacity: data.capacity,
           status: data.status,
           startDate: toDate(data.startDate),
@@ -230,6 +293,34 @@ export async function updateBatchAction(batchId: string, _prev: FormState, formD
           description: data.description || null,
         },
       });
+
+      // Cross-Module Sync: Ensure SyllabusTrack exists for each covered subject
+      for (const sub of subjectsToSync) {
+        const subSlug = sub.code || sub.name.slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, "");
+        const trackCode = `SYL-${data.code}-${subSlug}`.slice(0, 30);
+
+        const existingTrack = await tx.syllabusTrack.findFirst({
+          where: { tenantId: ctx.tenant.id, code: trackCode },
+        });
+
+        if (!existingTrack) {
+          await tx.syllabusTrack.create({
+            data: {
+              tenantId: ctx.tenant.id,
+              academicYearId: data.academicYearId,
+              subjectId: sub.id,
+              batchId: batchId,
+              targetType: "BATCH",
+              name: `${data.name} - ${sub.name}`,
+              code: trackCode,
+              description: `Curriculum syllabus track for ${data.name} (${data.code}) — ${sub.name}`,
+              status: "ACTIVE",
+              startDate: toDate(data.startDate),
+              targetDate: toDate(data.endDate),
+            },
+          });
+        }
+      }
 
       await writeAudit(
         {

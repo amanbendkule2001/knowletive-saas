@@ -4,12 +4,12 @@ import {
   BarChart3,
   Building2,
   Check,
+  Cpu,
   CreditCard,
   GraduationCap,
   Layers,
   Lock,
   ShieldCheck,
-  Sparkles,
   Zap,
 } from "lucide-react";
 import { Logo, LogoMark } from "@/components/ui/logo";
@@ -39,7 +39,7 @@ const modules = [
     body: "Plans, trials, entitlements, GST invoices and payment status. Provider-agnostic: manual today, Razorpay or Stripe tomorrow.",
   },
   {
-    icon: Sparkles,
+    icon: Cpu,
     title: "AI Studio",
     body: "Report card remarks, lesson plans, question papers, fee reminders and attendance insights — metered per institute.",
   },
@@ -79,130 +79,139 @@ export default function LandingPage() {
 
       <main>
         {/* Hero */}
-        <section className="relative overflow-hidden">
-          <div className="pointer-events-none absolute inset-0 grid-bg opacity-40 [mask-image:radial-gradient(70%_60%_at_50%_0%,#000,transparent)]" />
-          <div className="relative mx-auto grid max-w-6xl gap-10 px-4 pb-16 pt-14 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-8 lg:pb-24 lg:pt-20">
+        <section className="relative">
+          <div className="relative mx-auto grid max-w-6xl gap-10 px-4 pb-16 pt-12 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-12 lg:pb-24 lg:pt-16">
             <div className="animate-in">
-              <span className="badge badge-brand">
+              <div className="flex items-center gap-2 text-xs text-muted">
                 <span className="size-1.5 rounded-full bg-[var(--brand)]" />
-                Built for schools, colleges & coaching
-              </span>
-              <h1 className="mt-5 text-[2.1rem] font-semibold leading-[1.08] tracking-tight sm:text-5xl lg:text-[3.35rem]">
-                Run every institute from{" "}
-                <span className="text-gradient">one platform.</span>
+                <span>Multi-tenant academic operations</span>
+              </div>
+              <h1 className="mt-4 text-3xl font-semibold leading-[1.08] tracking-tight sm:text-5xl lg:text-[3.25rem]">
+                Run every institute from one platform.
               </h1>
-              <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-muted sm:text-base">
+              <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-muted sm:text-base">
                 Coachgenie gives platform owners complete control of institutes, roles, students,
                 parents, subscriptions and AI — while each institute gets a fast, focused workspace
                 of its own.
               </p>
-              <div className="mt-7 flex flex-wrap items-center gap-3">
-                <Link href="/login" className="btn btn-primary px-5 py-3">
-                  Explore the live demo <ArrowRight className="size-4" />
+              <div className="mt-6 flex flex-wrap items-center gap-3">
+                <Link href="/login" className="btn btn-primary px-5 py-2.5">
+                  Explore live demo <ArrowRight className="size-4" />
                 </Link>
-                <a href="#platform" className="btn btn-secondary px-5 py-3">
-                  See the platform console
+                <a href="#platform" className="btn btn-secondary px-5 py-2.5">
+                  Platform console
                 </a>
               </div>
               <p className="mt-3 text-xs text-muted">
-                Seeded with 5 institutes, 280+ students and real dashboards. No signup required.
+                Pre-loaded with 5 institutes, 280+ students and ledger records. No signup required.
               </p>
 
-              <dl className="mt-9 grid max-w-lg grid-cols-2 gap-x-6 gap-y-4 border-t border-[var(--border)] pt-6 sm:grid-cols-4">
+              <dl className="mt-8 grid max-w-lg grid-cols-2 gap-x-6 gap-y-4 border-t border-[var(--border)] pt-6 sm:grid-cols-4">
                 {[
-                  ["7", "ready roles"],
-                  ["18", "permissions"],
-                  ["6", "AI modules"],
-                  ["100%", "tenant isolation"],
+                  ["7", "Ready roles"],
+                  ["18", "Permissions"],
+                  ["6", "AI workflows"],
+                  ["100%", "Tenant isolation"],
                 ].map(([value, label]) => (
                   <div key={label}>
                     <dt className="text-xl font-semibold tabular-nums">{value}</dt>
-                    <dd className="text-[11px] text-muted">{label}</dd>
+                    <dd className="mt-0.5 text-[11px] text-muted">{label}</dd>
                   </div>
                 ))}
               </dl>
             </div>
 
             {/* Product mock */}
-            <div className="relative animate-in lg:pl-4" aria-hidden>
-              <div className="absolute -inset-6 -z-10 rounded-[2rem] bg-gradient-to-tr from-indigo-500/15 via-violet-500/10 to-cyan-400/15 blur-2xl" />
-              <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[0_30px_80px_-30px_rgb(15_23_42/0.45)]">
+            <div className="relative animate-in lg:pl-2" aria-hidden>
+              <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
                 <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <LogoMark size={22} />
-                    <span className="text-[11px] font-semibold">Sunrise Public School</span>
+                  <div className="flex items-center gap-2.5">
+                    <LogoMark size={20} />
+                    <span className="text-xs font-medium">Sunrise Public School</span>
+                    <span className="text-[10px] tabular-nums text-muted">· inst_01k9</span>
                   </div>
-                  <span className="badge badge-success">Active</span>
+                  <div className="flex items-center gap-2">
+                    <span className="size-1.5 rounded-full bg-[var(--success)]" />
+                    <span className="text-[11px] text-muted">Active</span>
+                  </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2 p-4">
+
+                <div className="grid grid-cols-3 gap-2.5 p-4">
                   {[
-                    ["Students", "1,284", "+6.2%"],
-                    ["Attendance", "94.1%", "today"],
-                    ["Collected", "₹18.4L", "this term"],
+                    ["Enrolled students", "1,284", "+6.2% vs last term"],
+                    ["Attendance today", "94.1%", "1,208 present"],
+                    ["Collected this term", "₹18,40,000", "91.2% of billed"],
                   ].map(([label, value, sub]) => (
-                    <div key={label} className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-2.5">
-                      <p className="text-[9px] uppercase tracking-wide text-muted">{label}</p>
-                      <p className="mt-0.5 text-sm font-semibold tabular-nums">{value}</p>
-                      <p className="text-[9px] text-[var(--success)]">{sub}</p>
+                    <div key={label} className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-3">
+                      <p className="text-[11px] text-muted">{label}</p>
+                      <p className="mt-1 text-base font-semibold tabular-nums">{value}</p>
+                      <p className="mt-0.5 text-[10px] text-muted">{sub}</p>
                     </div>
                   ))}
                 </div>
+
                 <div className="mx-4 rounded-lg border border-[var(--border)] p-3">
-                  <div className="flex items-end justify-between">
-                    <p className="text-[10px] font-medium">Fee collection</p>
-                    <span className="text-[9px] text-muted">last 8 months</span>
+                  <div className="flex items-baseline justify-between">
+                    <div>
+                      <p className="text-xs font-medium">Fee collection</p>
+                      <p className="text-[11px] text-muted">Monthly receipts across all batches</p>
+                    </div>
+                    <span className="font-mono text-[11px] tabular-nums text-muted">FY 2025–26</span>
                   </div>
-                  <div className="mt-3 flex h-24 items-end gap-1.5">
-                    {[38, 56, 44, 72, 61, 86, 74, 94].map((h, i) => (
-                      <div
-                        key={i}
-                        className="flex-1 rounded-t bg-gradient-to-t from-indigo-500/25 to-indigo-500"
-                        style={{ height: `${h}%` }}
-                      />
+                  <div className="mt-4 flex h-24 items-end gap-2">
+                    {[
+                      { h: 42, m: "Apr" },
+                      { h: 58, m: "May" },
+                      { h: 51, m: "Jun" },
+                      { h: 76, m: "Jul" },
+                      { h: 68, m: "Aug" },
+                      { h: 84, m: "Sep" },
+                      { h: 79, m: "Oct" },
+                      { h: 96, m: "Nov", current: true },
+                    ].map((bar, i) => (
+                      <div key={i} className="flex flex-1 flex-col items-center gap-1.5">
+                        <div
+                          className={`w-full rounded-xs transition-colors ${
+                            bar.current ? "bg-[var(--brand)]" : "bg-[var(--surface-3)]"
+                          }`}
+                          style={{ height: `${bar.h}%` }}
+                        />
+                        <span className="font-mono text-[9px] text-muted">{bar.m}</span>
+                      </div>
                     ))}
                   </div>
                 </div>
-                <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] p-4">
+
+                <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-3 text-[11px]">
                   <div className="flex items-center gap-2">
-                    <span className="grid size-7 place-items-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 text-[9px] font-bold text-white">
-                      AI
-                    </span>
-                    <div>
-                      <p className="text-[10px] font-semibold">Report card remarks</p>
-                      <p className="text-[9px] text-muted">32 drafts saved this week</p>
-                    </div>
+                    <span className="font-mono text-[10px] text-muted">Isolation:</span>
+                    <span className="text-muted">Tenant-scoped query filter active</span>
                   </div>
-                  <span className="badge badge-brand">Growth plan</span>
+                  <span className="badge badge-neutral font-mono">Growth tier</span>
                 </div>
-              </div>
-              <div className="absolute -bottom-4 -left-3 hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 shadow-lg sm:block">
-                <p className="flex items-center gap-1.5 text-[10px] font-semibold">
-                  <Lock className="size-3 text-[var(--success)]" /> Tenant-scoped by default
-                </p>
-                <p className="mt-0.5 text-[9px] text-muted">Every query filtered by institute</p>
               </div>
             </div>
           </div>
         </section>
 
         {/* Modules */}
-        <section id="modules" className="border-t border-[var(--border)] bg-[var(--surface)]/45 py-16 sm:py-20">
+        <section id="modules" className="border-t border-[var(--border)] bg-[var(--surface-2)]/50 py-16 sm:py-20">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
             <div className="max-w-2xl">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand)]">Modules</p>
+              <p className="text-xs font-medium text-[var(--brand)]">Academic modules</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
                 The whole institute, without the spreadsheet sprawl.
               </h2>
               <p className="mt-3 text-sm leading-relaxed text-muted">
                 Each module respects the same permission model and subscription entitlements. Turn a
-                feature on for a plan and it appears for every institute on that plan — instantly.
+                feature on for a plan and it appears for every institute on that plan immediately.
               </p>
             </div>
-            <div className="mt-9 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {modules.map((m) => (
                 <div key={m.title} className="card card-hover p-5">
-                  <span className="grid size-9 place-items-center rounded-lg bg-[var(--brand-soft)] text-[var(--brand)]">
-                    <m.icon className="size-4.5" />
+                  <span className="grid size-8 place-items-center rounded-md border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text)]">
+                    <m.icon className="size-4" />
                   </span>
                   <h3 className="mt-3.5 text-sm font-semibold">{m.title}</h3>
                   <p className="mt-1.5 text-xs leading-relaxed text-muted">{m.body}</p>
@@ -210,13 +219,15 @@ export default function LandingPage() {
               ))}
             </div>
 
-            <div className="mt-6 flex flex-wrap gap-2">
-              {roles.map((r) => (
-                <span key={r} className="badge badge-neutral">
-                  <Check className="size-3 text-[var(--success)]" /> {r}
+            <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-5 text-xs text-muted">
+              <span className="font-medium text-[var(--text)]">Default role matrix:</span>
+              {roles.map((r, i) => (
+                <span key={r} className="inline-flex items-center gap-1.5 font-mono text-[11px]">
+                  {r}
+                  {i < roles.length - 1 && <span className="text-[var(--border-strong)]">·</span>}
                 </span>
               ))}
-              <span className="badge badge-brand">+ custom roles</span>
+              <span className="ml-auto text-[11px] text-muted">+ custom tenant roles</span>
             </div>
           </div>
         </section>
@@ -225,9 +236,7 @@ export default function LandingPage() {
         <section id="platform" className="py-16 sm:py-20">
           <div className="mx-auto grid max-w-6xl gap-10 px-4 sm:px-6 lg:grid-cols-2 lg:items-center">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand)]">
-                Platform console
-              </p>
+              <p className="text-xs font-medium text-[var(--brand)]">Platform governance</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
                 You decide what every institute can access.
               </h2>
@@ -236,7 +245,7 @@ export default function LandingPage() {
                 assign plans, edit entitlements, extend trials, reset roles and audit every sensitive
                 action from one console.
               </p>
-              <ul className="mt-5 space-y-2.5">
+              <ul className="mt-6 space-y-2.5">
                 {[
                   "Create an institute and its admin in one step",
                   "Feature matrix per plan — change once, applies everywhere",
@@ -245,9 +254,7 @@ export default function LandingPage() {
                   "Support access to any workspace, explicitly and visibly",
                 ].map((item) => (
                   <li key={item} className="flex items-start gap-2.5 text-[13px]">
-                    <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full bg-[var(--success-soft)] text-[var(--success)]">
-                      <Check className="size-2.5" />
-                    </span>
+                    <Check className="mt-0.5 size-3.5 shrink-0 text-[var(--success)]" />
                     <span className="text-muted">{item}</span>
                   </li>
                 ))}
@@ -256,8 +263,11 @@ export default function LandingPage() {
 
             <div className="card overflow-hidden" aria-hidden>
               <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-                <p className="text-xs font-semibold">Plan entitlements</p>
-                <span className="badge badge-neutral">Editing: Growth</span>
+                <div>
+                  <p className="text-xs font-semibold">Plan entitlements</p>
+                  <p className="text-[11px] text-muted">Configuring Growth tier</p>
+                </div>
+                <span className="badge badge-neutral font-mono text-[10px]">Active</span>
               </div>
               <div className="divide-y divide-[var(--border)]">
                 {FEATURES.slice(0, 7).map((f, i) => (
@@ -267,17 +277,21 @@ export default function LandingPage() {
                       <span className="truncate text-[12px]">{f.label}</span>
                     </div>
                     <span
-                      className={`relative h-4 w-7 shrink-0 rounded-full ${i < 5 ? "bg-[var(--brand)]" : "bg-[var(--surface-3)]"}`}
+                      className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
+                        i < 5 ? "bg-[var(--brand)]" : "bg-[var(--surface-3)]"
+                      }`}
                     >
                       <span
-                        className={`absolute top-0.5 size-3 rounded-full bg-white shadow ${i < 5 ? "left-3.5" : "left-0.5"}`}
+                        className={`absolute top-0.5 size-3 rounded-full bg-white transition-all shadow-xs ${
+                          i < 5 ? "left-3.5" : "left-0.5"
+                        }`}
                       />
                     </span>
                   </div>
                 ))}
               </div>
               <div className="flex items-center justify-between border-t border-[var(--border)] bg-[var(--surface-2)] px-4 py-3">
-                <p className="text-[10px] text-muted">Applies to 2 institutes on this plan</p>
+                <p className="text-[11px] text-muted">Applies to 2 institutes on this plan</p>
                 <span className="btn btn-primary btn-sm">Save changes</span>
               </div>
             </div>
@@ -285,41 +299,40 @@ export default function LandingPage() {
         </section>
 
         {/* AI */}
-        <section id="ai" className="border-y border-[var(--border)] bg-[var(--surface)]/45 py-16 sm:py-20">
+        <section id="ai" className="border-y border-[var(--border)] bg-[var(--surface-2)]/50 py-16 sm:py-20">
           <div className="mx-auto grid max-w-6xl gap-10 px-4 sm:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
             <div className="order-2 lg:order-1">
               <div className="card overflow-hidden">
                 <div className="flex items-center gap-2 border-b border-[var(--border)] px-4 py-3">
-                  <Sparkles className="size-4 text-[var(--brand)]" />
-                  <p className="text-xs font-semibold">AI Studio · report card remarks</p>
-                  <span className="badge badge-brand ml-auto">2 credits</span>
+                  <Cpu className="size-3.5 text-[var(--brand)]" />
+                  <p className="text-xs font-semibold">AI Studio · Academic remarks</p>
+                  <span className="ml-auto font-mono text-[10px] text-muted">2 credits / run</span>
                 </div>
                 <div className="p-4">
-                  <div className="rounded-lg bg-[var(--surface-2)] p-3 text-[11px] leading-relaxed text-muted">
-                    Student: Aarav Sharma, Class 6-B. Maths 78, Science 84, English 71. Hardworking,
-                    improves steadily, needs to participate more.
+                  <div className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-3 text-[11px] leading-relaxed text-muted">
+                    <span className="font-medium text-[var(--text)]">Input context:</span> Class 6-B · Aarav Sharma. Mathematics 78, Science 84, English 71. Regular attendance, active in science lab, needs encouragement in class discussions.
                   </div>
-                  <div className="mt-3 rounded-lg border border-[var(--border)] p-3">
-                    <p className="text-[11px] font-semibold">Generated draft</p>
-                    <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-                      Aarav has had a steady term and shows genuine curiosity in Science. Mathematics
-                      is improving with consistent practice, while written accuracy in English needs a
-                      little more attention. A 15-minute daily revision routine and one question asked
-                      in class each day would help…
+                  <div className="mt-3 rounded-md border border-[var(--border)] p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] font-semibold">Draft remark</p>
+                      <span className="font-mono text-[9px] text-muted">Term 1 report</span>
+                    </div>
+                    <p className="mt-2 text-[11px] leading-relaxed text-muted">
+                      Aarav has shown commendable dedication this term, demonstrating genuine curiosity in Science experiments. Mathematics scores reflect steady conceptual understanding. With greater active participation during classroom discussions, his overall confidence will continue to flourish.
                     </p>
                     <div className="mt-3 flex gap-2">
-                      <span className="btn btn-primary btn-sm">Insert into report card</span>
-                      <span className="btn btn-secondary btn-sm">Copy</span>
+                      <span className="btn btn-primary btn-sm">Insert into ledger</span>
+                      <span className="btn btn-secondary btn-sm">Copy text</span>
                     </div>
                   </div>
                 </div>
                 <div className="border-t border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5 text-[10px] text-muted">
-                  Demo mode runs without a key. Add OPENAI_API_KEY to switch to a live model.
+                  Runs via deterministic schema output with per-institute quota allocation.
                 </div>
               </div>
             </div>
             <div className="order-1 lg:order-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand)]">AI modules</p>
+              <p className="text-xs font-medium text-[var(--brand)]">Academic automation</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
                 Useful AI, not a chatbot bolted on.
               </h2>
@@ -328,25 +341,24 @@ export default function LandingPage() {
                 Every call is metered against the institute&apos;s plan, logged, and refunded if the
                 provider fails.
               </p>
-              <div className="mt-5 grid gap-2 sm:grid-cols-2">
+              <div className="mt-6 grid gap-2 sm:grid-cols-2">
                 {[
-                  ["Report card remarks", "FileText"],
-                  ["Lesson plans", "BookOpen"],
-                  ["Question papers", "ClipboardList"],
-                  ["Fee reminders", "Wallet"],
-                  ["Admission replies", "MessageSquare"],
-                  ["Attendance insights", "TrendingUp"],
-                ].map(([label, icon]) => (
-                  <div key={label} className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[12px]">
+                  "Report card remarks",
+                  "Lesson plans",
+                  "Question papers",
+                  "Fee reminders",
+                  "Admission replies",
+                  "Attendance insights",
+                ].map((label) => (
+                  <div key={label} className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[12px]">
                     <span className="size-1.5 rounded-full bg-[var(--brand)]" />
-                    {label}
-                    <span className="sr-only">{icon}</span>
+                    <span>{label}</span>
                   </div>
                 ))}
               </div>
               <div className="mt-4 flex items-center gap-2 text-[11px] text-muted">
-                <Zap className="size-3.5 text-[var(--warning)]" />
-                Per-tenant credit limits · atomic deduction · full job log
+                <span className="font-mono text-[10px]">Governance:</span>
+                <span>Per-tenant credit limits · Atomic quota deduction · Full audit trail</span>
               </div>
             </div>
           </div>
@@ -356,7 +368,7 @@ export default function LandingPage() {
         <section id="pricing" className="py-16 sm:py-20">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
             <div className="text-center">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand)]">Pricing</p>
+              <p className="text-xs font-medium text-[var(--brand)]">Subscription plans</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
                 Plans the platform owner controls
               </h2>
@@ -369,14 +381,18 @@ export default function LandingPage() {
               {plans.map((p) => (
                 <div
                   key={p.key}
-                  className={`card relative p-5 ${p.highlighted ? "border-[var(--brand)] shadow-[0_0_0_3px_var(--brand-soft)]" : ""}`}
+                  className={`card relative p-5 ${
+                    p.highlighted ? "border-[var(--brand)]" : ""
+                  }`}
                 >
-                  {p.highlighted && (
-                    <span className="badge badge-brand absolute -top-2.5 left-5">Most popular</span>
-                  )}
-                  <h3 className="text-sm font-semibold">{p.name}</h3>
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="text-sm font-semibold">{p.name}</h3>
+                    {p.highlighted && (
+                      <span className="badge badge-brand font-mono text-[10px]">Recommended</span>
+                    )}
+                  </div>
                   <p className="mt-1 min-h-[2.5rem] text-[11px] leading-relaxed text-muted">{p.description}</p>
-                  <p className="mt-3 text-2xl font-semibold tracking-tight">
+                  <p className="mt-3 text-2xl font-semibold tabular-nums tracking-tight">
                     {money(p.priceMonthly, "INR")}
                     <span className="text-xs font-normal text-muted"> / month</span>
                   </p>
@@ -399,22 +415,22 @@ export default function LandingPage() {
                     href="/login"
                     className={`btn mt-5 w-full ${p.highlighted ? "btn-primary" : "btn-secondary"}`}
                   >
-                    {p.key === "scale" ? "Talk to us" : "Start a trial"}
+                    {p.key === "scale" ? "Contact sales" : "Start trial"}
                   </Link>
                 </div>
               ))}
             </div>
             <p className="mt-4 text-center text-[11px] text-muted">
-              Prices exclude 18% GST. Enterprise plans are assigned privately by the platform team.
+              Prices exclude 18% GST. Enterprise plans are provisioned directly from the platform console.
             </p>
           </div>
         </section>
 
         {/* Security */}
-        <section id="security" className="border-t border-[var(--border)] bg-[var(--surface)]/45 py-16 sm:py-20">
+        <section id="security" className="border-t border-[var(--border)] bg-[var(--surface-2)]/50 py-16 sm:py-20">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
             <div className="max-w-2xl">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--brand)]">Trust</p>
+              <p className="text-xs font-medium text-[var(--brand)]">Platform security</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
                 Secure and fast by default, not by promise.
               </h2>
@@ -422,13 +438,15 @@ export default function LandingPage() {
             <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {[
                 { icon: Lock, title: "Tenant isolation", body: "Every read and write scoped to the active institute, enforced server-side." },
-                { icon: ShieldCheck, title: "RBAC + audit", body: "Role matrix, per-user overrides and an append-only audit trail." },
-                { icon: Zap, title: "Fast on slow phones", body: "Server components, minimal client JS, pagination and indexed queries." },
-                { icon: CreditCard, title: "Billing safe by design", body: "Signed webhooks, idempotent payments and fail-closed entitlements." },
+                { icon: ShieldCheck, title: "RBAC & audit log", body: "Role matrix, per-user overrides and an append-only audit trail." },
+                { icon: Zap, title: "Low-bandwidth speed", body: "Server components, minimal client JS, pagination and indexed queries." },
+                { icon: CreditCard, title: "Deterministic billing", body: "Signed webhooks, idempotent payments and fail-closed entitlements." },
               ].map((c) => (
                 <div key={c.title} className="card p-4">
-                  <c.icon className="size-4 text-[var(--brand)]" />
-                  <p className="mt-2.5 text-[13px] font-semibold">{c.title}</p>
+                  <span className="grid size-7 place-items-center rounded-md border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text)]">
+                    <c.icon className="size-3.5" />
+                  </span>
+                  <p className="mt-3 text-[13px] font-semibold">{c.title}</p>
                   <p className="mt-1 text-[11px] leading-relaxed text-muted">{c.body}</p>
                 </div>
               ))}
@@ -439,23 +457,21 @@ export default function LandingPage() {
         {/* CTA */}
         <section className="py-16 sm:py-20">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
-            <div className="relative overflow-hidden rounded-2xl px-6 py-12 text-center brand-gradient sm:px-12 sm:py-16">
-              <div className="absolute inset-0 grid-bg opacity-20 mix-blend-overlay" />
-              <div className="relative">
-                <LogoMark size={42} className="mx-auto" />
-                <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-                  Open the demo. Break things. See the whole product.
+            <div className="card overflow-hidden border border-[var(--border)] bg-[var(--surface-2)] px-6 py-12 text-center sm:px-12 sm:py-16">
+              <div className="mx-auto max-w-2xl">
+                <LogoMark size={36} className="mx-auto" />
+                <h2 className="mt-4 text-2xl font-semibold tracking-tight sm:text-3xl">
+                  Explore the platform environment.
                 </h2>
-                <p className="mx-auto mt-2 max-w-lg text-sm text-white/80">
-                  Five seeded institutes, live RBAC, subscription console and AI Studio — ready in
-                  under a minute.
+                <p className="mx-auto mt-2.5 max-w-lg text-sm leading-relaxed text-muted">
+                  Five pre-configured institutes, live role matrix, billing ledger and academic workflows — testable without onboarding delay.
                 </p>
                 <div className="mt-6 flex flex-wrap justify-center gap-3">
-                  <Link href="/login" className="btn bg-white px-5 py-3 text-slate-900 hover:bg-slate-100">
-                    Sign in to the demo <ArrowRight className="size-4" />
+                  <Link href="/login" className="btn btn-primary px-5 py-2.5">
+                    Launch live demo <ArrowRight className="size-4" />
                   </Link>
-                  <a href="#modules" className="btn border-white/30 bg-white/10 px-5 py-3 text-white backdrop-blur hover:bg-white/20">
-                    Browse modules
+                  <a href="#modules" className="btn btn-secondary px-5 py-2.5">
+                    Review modules
                   </a>
                 </div>
               </div>
@@ -466,13 +482,14 @@ export default function LandingPage() {
 
       <footer className="border-t border-[var(--border)] py-8">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 sm:flex-row sm:px-6">
-          <Logo href="/" size={26} subtitle="Institute OS" />
+          <Logo href="/" size={24} subtitle="Institute OS" />
           <p className="text-[11px] text-muted">
-            © {new Date().getFullYear()} Coachgenie. Multi-tenant institute platform.
+            © {new Date().getFullYear()} Coachgenie · Multi-tenant institute platform.
           </p>
           <div className="flex gap-4 text-[11px] text-muted">
             <Link href="/login" className="hover:text-[var(--text)]">Sign in</Link>
-            <a href="#security" className="hover:text-[var(--text)]">Security</a>
+            <a href="#platform" className="hover:text-[var(--text)]">Platform console</a>
+            <a href="#security" className="hover:text-[var(--text)]">Security & isolation</a>
           </div>
         </div>
       </footer>

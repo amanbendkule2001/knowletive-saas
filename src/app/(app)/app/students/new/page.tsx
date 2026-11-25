@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { db } from "@/lib/db";
 import { requireTenantWrite } from "@/lib/rbac";
-import { createStudentAction } from "@/actions/students";
+import { createStudentAction, getNextAdmissionNumber } from "@/actions/students";
 import { ActionForm } from "@/components/ui/action-form";
 import { Card, CardHeader, PageHeader } from "@/components/ui/primitives";
 import { StudentFields } from "@/components/app/student-fields";
@@ -11,7 +11,7 @@ export const metadata = { title: "Add student" };
 
 export default async function NewStudentPage() {
   const ctx = await requireTenantWrite("tenant.students.write");
-  const [classes, branches] = await Promise.all([
+  const [classes, branches, batches, suggestedAdmissionNo] = await Promise.all([
     db.classLevel.findMany({
       where: { tenantId: ctx.tenant.id },
       include: { sections: { orderBy: { name: "asc" } } },
@@ -22,6 +22,12 @@ export default async function NewStudentPage() {
       select: { id: true, name: true, code: true, branchType: true },
       orderBy: [{ branchType: "asc" }, { name: "asc" }],
     }),
+    db.batch.findMany({
+      where: { tenantId: ctx.tenant.id, status: "ACTIVE" },
+      select: { id: true, name: true, code: true },
+      orderBy: { name: "asc" },
+    }),
+    getNextAdmissionNumber(ctx.tenant.id),
   ]);
 
   return (
@@ -55,7 +61,13 @@ export default async function NewStudentPage() {
             pendingLabel="Creating…"
             cancelHref="/app/students"
           >
-            <StudentFields classes={classes} branches={branches} mode="create" />
+            <StudentFields
+              classes={classes}
+              branches={branches}
+              batches={batches}
+              mode="create"
+              suggestedAdmissionNo={suggestedAdmissionNo}
+            />
           </ActionForm>
         </div>
       </Card>

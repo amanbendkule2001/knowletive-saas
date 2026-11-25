@@ -7,6 +7,9 @@ import { ActionForm } from "@/components/ui/action-form";
 import { Field, FormGrid } from "@/components/ui/form-field";
 import { Card, PageHeader } from "@/components/ui/primitives";
 import { getOrProvisionAcademicYears } from "@/lib/academic-years";
+import { BatchNameCodeFields } from "./batch-name-code-fields";
+import { BatchMultiSubjectFields } from "./batch-multi-subject-fields";
+import { BatchScheduleDateFields } from "./batch-schedule-date-fields";
 
 export const metadata = { title: "Create Batch" };
 
@@ -53,27 +56,7 @@ export default async function NewBatchPage() {
           pendingLabel="Creating batch…"
         >
           <FormGrid>
-            <Field label="Batch name" htmlFor="name" required hint="e.g. Physics Advanced JEE 2026">
-              <input
-                id="name"
-                name="name"
-                type="text"
-                required
-                placeholder="Physics Advanced 2026"
-                className="input text-xs w-full"
-              />
-            </Field>
-
-            <Field label="Batch code" htmlFor="code" required hint="Unique alphanumeric code (e.g. PHY-ADV-A)">
-              <input
-                id="code"
-                name="code"
-                type="text"
-                required
-                placeholder="PHY-ADV-A"
-                className="input font-mono uppercase text-xs w-full"
-              />
-            </Field>
+            <BatchNameCodeFields />
 
             <Field label="Academic year" htmlFor="academicYearId" required>
               <select
@@ -91,17 +74,6 @@ export default async function NewBatchPage() {
                 {academicYears.map((y) => (
                   <option key={y.id} value={y.id}>
                     {y.name} {y.isActive ? "(Current)" : ""}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Subject (optional)" htmlFor="subjectId" hint="Leave empty for general/all-subject cohorts">
-              <select id="subjectId" name="subjectId" defaultValue="" className="input text-xs w-full">
-                <option value="">General / Multi-Subject</option>
-                {subjects.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} {s.code ? `(${s.code})` : ""}
                   </option>
                 ))}
               </select>
@@ -127,25 +99,11 @@ export default async function NewBatchPage() {
               </select>
             </Field>
 
-            <Field label="Start date" htmlFor="startDate">
-              <input id="startDate" name="startDate" type="date" className="input text-xs w-full" />
-            </Field>
-
-            <Field label="End date" htmlFor="endDate">
-              <input id="endDate" name="endDate" type="date" className="input text-xs w-full" />
-            </Field>
+            <BatchMultiSubjectFields subjects={subjects} />
           </FormGrid>
 
-          <div className="mt-4 space-y-4">
-            <Field label="Schedule / Timing" htmlFor="schedule" hint="e.g. Mon, Wed, Fri 4:00 PM – 5:30 PM (Room 204)">
-              <input
-                id="schedule"
-                name="schedule"
-                type="text"
-                placeholder="Mon, Wed, Fri 4:00 PM – 5:30 PM"
-                className="input text-xs w-full"
-              />
-            </Field>
+          <div className="mt-5 space-y-5">
+            <BatchScheduleDateFields />
 
             <Field label="Description" htmlFor="description">
               <textarea

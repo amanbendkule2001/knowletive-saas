@@ -14,6 +14,7 @@ import { ActionForm } from "@/components/ui/action-form";
 import { ConfirmButton } from "@/components/ui/client-bits";
 import { Field, FormGrid } from "@/components/ui/form-field";
 import { FeatureLocked } from "@/components/ui/feature-gate";
+import { SubjectNameCodeFields } from "./subject-name-code-fields";
 import {
   Badge,
   Card,
@@ -261,13 +262,8 @@ export default async function AcademicsPage() {
             <CardHeader title="Add a subject" description="Optional class and teacher allocation." />
             <div className="p-4">
               <ActionForm action={createSubjectAction} submitLabel="Add subject" pendingLabel="Adding…">
-                <Field label="Subject name" htmlFor="subjectName" required>
-                  <input id="subjectName" name="name" className="input" required />
-                </Field>
                 <FormGrid>
-                  <Field label="Code" htmlFor="subjectCode">
-                    <input id="subjectCode" name="code" className="input" placeholder="e.g. MAT-101" />
-                  </Field>
+                  <SubjectNameCodeFields />
                   <Field label="Class" htmlFor="subjectClassId">
                     <select id="subjectClassId" name="classId" className="select" defaultValue="">
                       <option value="">All classes</option>

@@ -1525,6 +1525,7 @@ model Lead {
   studentName        String
   dob                DateTime?
   classInterested    String?
+  board              String?
   academicYearId     String?
   guardianName       String
   guardianPhone      String

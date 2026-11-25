@@ -21,6 +21,7 @@ import {
   logLeadActivityAction,
   convertLeadAction,
 } from "@/actions/leads";
+import { getNextAdmissionNumber } from "@/actions/students";
 import { ActionForm } from "@/components/ui/action-form";
 import { ConfirmButton } from "@/components/ui/client-bits";
 import {
@@ -31,7 +32,9 @@ import {
   Tone,
 } from "@/components/ui/primitives";
 import { Field, FormGrid } from "@/components/ui/form-field";
+import { EditableSelectInput } from "@/components/ui/editable-select-input";
 import { LeadAiReplyDraft } from "@/components/app/lead-ai-reply";
+import { LeadConvertForm } from "./lead-convert-form";
 import { date, timeAgo } from "@/lib/format";
 import type { LeadStatus } from "@prisma/client";
 
@@ -96,8 +99,9 @@ export default async function LeadDetailPage({
   const canWrite = hasTenantPermission(ctx, "tenant.leads.write");
   const canConvert = hasTenantPermission(ctx, "tenant.leads.convert");
   const canDelete = hasTenantPermission(ctx, "tenant.leads.delete");
+  const isConverted = lead.status === "CONVERTED" || !!lead.convertedStudentId;
 
-  const [classes, sections, staff, academicYears] = await Promise.all([
+  const [classes, sections, staff, academicYears, suggestedAdmissionNo, batches, subjects] = await Promise.all([
     db.classLevel.findMany({
       where: { tenantId: ctx.tenant.id },
       orderBy: { order: "asc" },
@@ -109,19 +113,55 @@ export default async function LeadDetailPage({
     }),
     db.membership.findMany({
       where: { tenantId: ctx.tenant.id, status: "ACTIVE" },
-      include: { user: true },
+      include: { user: true, role: true },
       orderBy: { user: { name: "asc" } },
     }),
     db.academicYear.findMany({
       where: { tenantId: ctx.tenant.id },
       orderBy: { startDate: "desc" },
     }),
+    canConvert && !isConverted ? getNextAdmissionNumber(ctx.tenant.id) : Promise.resolve(""),
+    db.batch.findMany({
+      where: { tenantId: ctx.tenant.id, status: "ACTIVE" },
+      select: { id: true, name: true, code: true, capacity: true },
+      orderBy: { name: "asc" },
+    }),
+    db.subject.findMany({
+      where: { tenantId: ctx.tenant.id },
+      select: { id: true, name: true, code: true, classId: true },
+      orderBy: { name: "asc" },
+    }),
   ]);
+
+  const defaultClasses = Array.from({ length: 12 }, (_, i) => `Class ${i + 1}`);
+  const existingClassNames = classes.map((c) => c.name);
+  const allClasses = Array.from(new Set([...defaultClasses, ...existingClassNames]));
+  const classOptions = allClasses.map((name) => ({ value: name, label: name }));
+  const classQuickChips = ["Class 8", "Class 9", "Class 10", "Class 11", "Class 12"];
+
+  const boardOptions = [
+    { value: "Maharashtra State Board (SSC / HSC)", label: "Maharashtra State Board (SSC / HSC)" },
+    { value: "CBSE (Central Board of Secondary Education)", label: "CBSE" },
+    { value: "ICSE / ISC (CISCE)", label: "ICSE / ISC" },
+    { value: "IGCSE / IB (International / Cambridge)", label: "IGCSE / IB (Cambridge)" },
+  ];
+  const boardQuickChips = ["Maharashtra State Board", "CBSE", "ICSE", "IGCSE / IB"];
+
+  const sourceOptions = [
+    { value: "WALK_IN", label: "Walk-in Visit" },
+    { value: "PHONE", label: "Phone Call" },
+    { value: "WHATSAPP", label: "WhatsApp Enquiry" },
+    { value: "REFERRAL", label: "Parent / Student Referral" },
+    { value: "SOCIAL", label: "Social Media (Instagram/FB)" },
+    { value: "WEBSITE", label: "Website Form" },
+    { value: "PAMPHLET", label: "Pamphlet / Banner / Poster" },
+    { value: "SCHOOL_CAMPAIGN", label: "School Seminar / Campaign" },
+  ];
+  const sourceQuickChips = ["Walk-in Visit", "Phone Call", "WhatsApp Enquiry", "Parent Referral"];
 
   const nameParts = lead.studentName.trim().split(/\s+/);
   const firstName = nameParts[0] ?? "";
   const lastName = nameParts.slice(1).join(" ") || "—";
-  const isConverted = lead.status === "CONVERTED" || !!lead.convertedStudentId;
 
   return (
     <div className="space-y-6">
@@ -250,18 +290,26 @@ export default async function LeadDetailPage({
                       />
                     </Field>
                     <Field label="Interested class">
-                      <select
+                      <EditableSelectInput
                         name="classInterested"
                         defaultValue={lead.classInterested ?? ""}
-                        className="select"
-                      >
-                        <option value="">Select class level…</option>
-                        {classes.map((c) => (
-                          <option key={c.id} value={c.name}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
+                        placeholder="e.g. Class 10 (or type custom class)"
+                        options={classOptions}
+                        dropdownPlaceholder="Select class (1-12)…"
+                        quickChips={classQuickChips}
+                        helperText="Type custom class or pick from Class 1 to 12"
+                      />
+                    </Field>
+                    <Field label="Education Board">
+                      <EditableSelectInput
+                        name="board"
+                        defaultValue={(lead as any).board ?? ""}
+                        placeholder="e.g. Maharashtra State Board (or type custom board)"
+                        options={boardOptions}
+                        dropdownPlaceholder="Select Maharashtra board…"
+                        quickChips={boardQuickChips}
+                        helperText="Select 1 of 4 Maharashtra boards or type custom board"
+                      />
                     </Field>
                     <Field label="Academic year">
                       <select
@@ -278,13 +326,15 @@ export default async function LeadDetailPage({
                       </select>
                     </Field>
                     <Field label="Source">
-                      <select name="source" defaultValue={lead.source} className="select">
-                        <option value="WALK_IN">Walk-in Visit</option>
-                        <option value="PHONE">Phone Call</option>
-                        <option value="WEBSITE">Website Form</option>
-                        <option value="REFERRAL">Parent Referral</option>
-                        <option value="SOCIAL">Social Media</option>
-                      </select>
+                      <EditableSelectInput
+                        name="source"
+                        defaultValue={lead.source}
+                        placeholder="e.g. Walk-in or custom source"
+                        options={sourceOptions}
+                        dropdownPlaceholder="Select enquiry source…"
+                        quickChips={sourceQuickChips}
+                        helperText="Select common source or type custom origin"
+                      />
                     </Field>
                     <Field label="Enquiry status">
                       <select name="status" defaultValue={lead.status} className="select">
@@ -345,6 +395,10 @@ export default async function LeadDetailPage({
                     <span>{lead.classInterested || "Not specified"}</span>
                   </div>
                   <div>
+                    <span className="text-muted block">Education Board</span>
+                    <span>{(lead as any).board || "Not specified"}</span>
+                  </div>
+                  <div>
                     <span className="text-muted block">Source</span>
                     <span className="capitalize">{lead.source.toLowerCase().replace("_", " ")}</span>
                   </div>
@@ -384,86 +438,22 @@ export default async function LeadDetailPage({
             <Card className="border-[var(--brand-soft)] shadow-sm">
               <CardHeader
                 title="Convert Enquiry into Enrolled Student"
-                description="Promote this enquiry into an official student admission. Enforces plan quota, deduplicates guardian records, and maintains traceable linkage."
+                description="Promote this enquiry into an official student admission. Enforces plan quota, enrolls into batch, generates synced fee invoice with discount, and links teacher & subjects."
                 action={<UserPlus className="size-4 text-[var(--brand)]" />}
               />
               <div className="p-6">
-                <ActionForm
-                  action={convertLeadAction}
-                  submitLabel="Confirm & Convert to Student"
-                  pendingLabel="Converting to student…"
-                >
-                  <input type="hidden" name="leadId" value={lead.id} />
-                  <FormGrid>
-                    <Field label="Admission number *">
-                      <input
-                        name="admissionNo"
-                        required
-                        placeholder="e.g. ADM-2026-001"
-                        className="input"
-                      />
-                    </Field>
-                    <Field label="First name *">
-                      <input
-                        name="firstName"
-                        defaultValue={firstName}
-                        required
-                        className="input"
-                      />
-                    </Field>
-                    <Field label="Last name *">
-                      <input
-                        name="lastName"
-                        defaultValue={lastName}
-                        required
-                        className="input"
-                      />
-                    </Field>
-                    <Field label="Date of birth">
-                      <input
-                        name="dob"
-                        type="date"
-                        defaultValue={lead.dob ? lead.dob.toISOString().slice(0, 10) : ""}
-                        className="input"
-                      />
-                    </Field>
-                    <Field label="Gender">
-                      <select name="gender" className="select" defaultValue="">
-                        <option value="">Select gender…</option>
-                        <option value="Male">Male</option>
-                        <option value="Female">Female</option>
-                        <option value="Other">Other</option>
-                      </select>
-                    </Field>
-                    <Field label="Class level">
-                      <select name="classId" className="select" defaultValue="">
-                        <option value="">Select class…</option>
-                        {classes.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                    <Field label="Section">
-                      <select name="sectionId" className="select" defaultValue="">
-                        <option value="">Select section…</option>
-                        {sections.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.class.name} — Section {s.name}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                    <Field label="Residential address" className="sm:col-span-2">
-                      <input
-                        name="address"
-                        placeholder="e.g. 124 Park Avenue, South Extension"
-                        className="input"
-                      />
-                    </Field>
-                  </FormGrid>
-                </ActionForm>
+                <LeadConvertForm
+                  leadId={lead.id}
+                  suggestedAdmissionNo={suggestedAdmissionNo}
+                  defaultFirstName={firstName}
+                  defaultLastName={lastName}
+                  defaultDob={lead.dob ? lead.dob.toISOString().slice(0, 10) : ""}
+                  classes={classes}
+                  sections={sections}
+                  batches={batches}
+                  subjects={subjects}
+                  staff={staff}
+                />
               </div>
             </Card>
           ) : null}
