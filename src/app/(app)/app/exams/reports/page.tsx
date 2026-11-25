@@ -132,16 +132,16 @@ export default async function ReportsPage({
         <>
           {/* Key Metric Cards */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <StatCard label="Total Candidates" value={totalStudents} sub="Assessed students" />
-            <StatCard label="Pass Rate" value={`${passRate}%`} sub={`${passedStudents} of ${totalStudents} cleared`} />
-            <StatCard label="Batch Average" value={`${avgPercentage}%`} sub="Weighted score" />
-            <StatCard label="Top Score" value={`${highestScore}%`} sub="Institutional highest" />
-            <StatCard label="Minimum Score" value={`${lowestScore}%`} sub="Lower threshold" />
+            <StatCard label="Total Candidates" value={totalStudents} sub="Assessed students" href="#merit-list" />
+            <StatCard label="Pass Rate" value={`${passRate}%`} sub={`${passedStudents} of ${totalStudents} cleared`} href="#grade-distribution" />
+            <StatCard label="Batch Average" value={`${avgPercentage}%`} sub="Weighted score" href="#merit-list" />
+            <StatCard label="Top Score" value={`${highestScore}%`} sub="Institutional highest" href="#merit-list" />
+            <StatCard label="Minimum Score" value={`${lowestScore}%`} sub="Lower threshold" href="#merit-list" />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {/* Grade Distribution Breakdown */}
-            <Card className="p-5 space-y-4">
+            <Card id="grade-distribution" className="p-5 space-y-4 scroll-mt-6">
               <h3 className="font-semibold text-base text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
                 <BarChart3 className="h-4 w-4 text-indigo-500" /> Grade Distribution
               </h3>
@@ -174,7 +174,7 @@ export default async function ReportsPage({
             </Card>
 
             {/* Top Rankers / Merit List */}
-            <Card className="md:col-span-2 p-5 space-y-4">
+            <Card id="merit-list" className="md:col-span-2 p-5 space-y-4 scroll-mt-6">
               <h3 className="font-semibold text-base text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
                 <Award className="h-4 w-4 text-emerald-500" /> Top Academic Performers
               </h3>

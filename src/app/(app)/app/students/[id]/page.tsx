@@ -156,6 +156,7 @@ export default async function StudentDetailPage({
           value={money(totalBilled)}
           sub={`${student.feeInvoices.length} invoice${student.feeInvoices.length === 1 ? "" : "s"}`}
           icon={<CircleDollarSign className="size-4" />}
+          href="#fees"
         />
         <StatCard
           label="Paid"
@@ -163,6 +164,7 @@ export default async function StudentDetailPage({
           sub={`${pct(totalBilled ? (totalPaid / totalBilled) * 100 : 0, 0)} of billed`}
           icon={<CircleDollarSign className="size-4" />}
           tone="success"
+          href="#fees"
         />
         <StatCard
           label="Outstanding"
@@ -170,6 +172,7 @@ export default async function StudentDetailPage({
           sub={outstanding > 0 ? "Follow up with the guardian" : "All settled"}
           icon={<CircleDollarSign className="size-4" />}
           tone={outstanding > 0 ? "warning" : "success"}
+          href="#fees"
         />
       </div>
 
@@ -382,7 +385,7 @@ export default async function StudentDetailPage({
         </div>
 
         <div className="space-y-4">
-          <Card>
+          <Card id="fees" className="scroll-mt-6">
             <CardHeader
               title="Fee invoices"
               description="Term fees, partial payments and dues"

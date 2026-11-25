@@ -322,17 +322,29 @@ export default async function ExamStudioPage({
       {activeTab === "overview" && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <StatCard label="Assessment Subjects" value={exam.subjects.length} sub="Configured exams" />
-            <StatCard label="Enrolled Candidates" value={exam.enrollments.length} sub="Active candidates" />
+            <StatCard
+              label="Assessment Subjects"
+              value={exam.subjects.length}
+              sub="Configured exams"
+              href={`/app/exams/${exam.id}?tab=subjects`}
+            />
+            <StatCard
+              label="Enrolled Candidates"
+              value={exam.enrollments.length}
+              sub="Active candidates"
+              href={`/app/exams/${exam.id}?tab=roster`}
+            />
             <StatCard
               label="Grading System"
               value={exam.gradeScale.code}
               sub={`${exam.gradeScale.bands.length} performance bands`}
+              href="/app/exams/grading-scales"
             />
             <StatCard
               label="Report Cards Status"
               value={exam.isPublished ? "Published" : "In Progress"}
               sub={exam.publishedAt ? new Date(exam.publishedAt).toLocaleDateString() : "Pending review"}
+              href={`/app/exams/${exam.id}?tab=results`}
             />
           </div>
 

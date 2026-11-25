@@ -116,7 +116,7 @@ export default async function SyllabusReportsPage() {
       </div>
 
       {/* Subject-Wise Completion Matrix */}
-      <Card className="p-5 border border-[var(--border)] space-y-4">
+      <Card id="curriculum-delivery" className="p-5 border border-[var(--border)] space-y-4 scroll-mt-6">
         <div>
           <h3 className="text-sm font-semibold text-foreground">Subject-Wise Curriculum Delivery</h3>
           <p className="text-xs text-muted">Aggregated across all classrooms and batches in this institute.</p>

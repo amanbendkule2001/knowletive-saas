@@ -98,12 +98,14 @@ export function Card({
   children,
   className,
   as: Tag = "div",
+  id,
 }: {
   children: ReactNode;
   className?: string;
   as?: "div" | "section" | "article";
+  id?: string;
 }) {
-  return <Tag className={cn("card", className)}>{children}</Tag>;
+  return <Tag id={id} className={cn("card", className)}>{children}</Tag>;
 }
 
 export function CardHeader({

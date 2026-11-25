@@ -302,28 +302,32 @@ export default async function BatchDetailPage({
           label="Active Students"
           value={num(activeCount)}
           icon={<GraduationCap className="size-4 text-[var(--brand)]" />}
+          href="#students"
         />
         <StatCard
           label="Available Slots"
           value={num(remainingSlots)}
           icon={<Users className="size-4 text-[var(--info)]" />}
+          href="#students"
         />
         <StatCard
           label="Assigned Teachers"
           value={num(batch.teachers.length)}
           icon={<UserCheck className="size-4 text-[var(--success)]" />}
+          href="#teachers"
         />
         <StatCard
           label="Lifecycle Events"
           value={num(batch.events.length)}
           icon={<History className="size-4 text-muted" />}
+          href="#events"
         />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main: Student Roster (2 cols) */}
         <div className="lg:col-span-2 space-y-6">
-          <Card className="overflow-hidden">
+          <Card id="students" className="overflow-hidden scroll-mt-6">
             <CardHeader
               title="Active Student Roster"
               description={`${activeCount} student(s) actively participating in this batch.`}
@@ -446,7 +450,7 @@ export default async function BatchDetailPage({
           )}
 
           {/* Immutable Audit Events Log */}
-          <Card className="overflow-hidden">
+          <Card id="events" className="overflow-hidden scroll-mt-6">
             <CardHeader
               title="Batch Lifecycle Events"
               description="Tamper-proof chronological log of student enrollment, drops, completions and transfers."
@@ -482,7 +486,7 @@ export default async function BatchDetailPage({
         {/* Sidebar: Details & Teachers (1 col) */}
         <div className="space-y-6">
           {/* Assigned Teachers */}
-          <Card className="p-5">
+          <Card id="teachers" className="p-5 scroll-mt-6">
             <div className="flex items-center justify-between pb-3 border-b border-[var(--border)]">
               <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
                 <UserCheck className="size-4 text-[var(--brand)]" />
