@@ -10,6 +10,7 @@ import { Logo } from "@/components/ui/logo";
 import { Callout } from "@/components/ui/primitives";
 import { logoutAction } from "@/actions/auth";
 import { evaluateAiPermission } from "@/lib/ai-permissions";
+import { getModuleBadges } from "@/lib/module-badges";
 import { CopilotWidget } from "@/components/ai-copilot/CopilotWidget";
 
 export const metadata = { title: "Workspace" };
@@ -87,9 +88,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     );
   }
 
-  const nav = appNav.filter((item) => !item.permission || hasTenantPermission(ctx, item.permission));
+  const [badges, usage] = await Promise.all([
+    getModuleBadges(tenant.id),
+    plan ? getAiUsage(tenant.id, plan.aiCreditsMonthly) : Promise.resolve(null),
+  ]);
 
-  const usage = plan ? await getAiUsage(tenant.id, plan.aiCreditsMonthly) : null;
+  const nav = appNav
+    .filter((item) => !item.permission || hasTenantPermission(ctx, item.permission))
+    .map((item) => ({
+      ...item,
+      badge: badges[item.href] ?? null,
+    }));
   const trialDaysLeft =
     tenant.subscription?.status === "TRIALING" && tenant.subscription.trialEndsAt
       ? daysBetween(new Date(), tenant.subscription.trialEndsAt)

@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { authorizeTenantWrite } from "@/lib/rbac";
 import { writeAudit } from "@/lib/audit";
 import { assertStaffCapacity, assertStudentCapacity, assertStudentCapacityTx } from "@/lib/entitlements";
+import { nextFeeNumber } from "@/actions/operations";
 import { hashPassword } from "@/lib/auth";
 import { resolveUserBranchScope } from "@/lib/branch";
 import {
@@ -36,6 +37,22 @@ function studentError(error: unknown, fallback: string) {
   return { error: error instanceof Error ? error.message : fallback };
 }
 
+export async function getNextAdmissionNumber(tenantId: string): Promise<string> {
+  const year = new Date().getFullYear();
+  const count = await db.student.count({ where: { tenantId } });
+  let next = count + 1;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const candidate = `ADM-${year}-${String(next).padStart(4, "0")}`;
+    const clash = await db.student.findFirst({
+      where: { tenantId, admissionNo: candidate },
+      select: { id: true },
+    });
+    if (!clash) return candidate;
+    next++;
+  }
+  return `ADM-${year}-${String(Date.now()).slice(-4)}`;
+}
+
 // ─────────────────────────────── Students ───────────────────────────────
 
 export async function createStudentAction(_prev: FormState, formData: FormData): Promise<FormState> {
@@ -58,6 +75,10 @@ export async function createStudentAction(_prev: FormState, formData: FormData):
     guardianPhone: formData.get("guardianPhone"),
     guardianEmail: formData.get("guardianEmail"),
     guardianRelation: formData.get("guardianRelation"),
+    batchId: formData.get("batchId"),
+    feeAmount: formData.get("feeAmount") || 0,
+    discountAmount: formData.get("discountAmount") || 0,
+    feeDueDate: formData.get("feeDueDate"),
   });
   if (!parsed.success) return fieldErrors(parsed.error);
 
@@ -158,6 +179,76 @@ export async function createStudentAction(_prev: FormState, formData: FormData):
         });
       }
 
+      // Batch Enrollment if batchId provided
+      let selectedBatchName: string | null = null;
+      if (d.batchId) {
+        const batch = await tx.batch.findFirst({
+          where: { id: d.batchId, tenantId: ctx.tenant.id },
+          select: { id: true, name: true },
+        });
+        if (batch) {
+          selectedBatchName = batch.name;
+          await tx.batchStudent.create({
+            data: {
+              batchId: batch.id,
+              studentId: student.id,
+              status: "ACTIVE",
+            },
+          });
+          await tx.batchEnrollmentEvent.create({
+            data: {
+              batchId: batch.id,
+              studentId: student.id,
+              actorId: ctx.user.id,
+              actorName: ctx.user.name,
+              eventType: "ENROLLED",
+              reason: "Direct Student Admission",
+            },
+          });
+        }
+      }
+
+      // Fee Invoice Generation if feeAmount > 0
+      const baseFee = Number(d.feeAmount) || 0;
+      const discount = Number(d.discountAmount) || 0;
+      const netFee = Math.max(0, baseFee - discount);
+      if (baseFee > 0) {
+        const invoiceNumber = await nextFeeNumber(ctx.tenant.id, ctx.tenant.slug);
+        const today = new Date();
+        today.setUTCHours(0, 0, 0, 0);
+
+        let dueDate: Date;
+        if (d.feeDueDate) {
+          const parsedDue = new Date(d.feeDueDate);
+          dueDate = Number.isNaN(parsedDue.getTime()) ? new Date(today.getTime() + 14 * 86_400_000) : parsedDue;
+        } else {
+          dueDate = new Date(today.getTime() + 14 * 86_400_000);
+        }
+
+        const feeNotes = [
+          `Course/Admission Fee: ₹${baseFee.toLocaleString("en-IN")}`,
+          discount > 0 ? `Discount / Concession: ₹${discount.toLocaleString("en-IN")}` : null,
+          `Net Payable: ₹${netFee.toLocaleString("en-IN")}`,
+          selectedBatchName ? `Batch: ${selectedBatchName}` : null,
+        ].filter(Boolean).join(" | ");
+
+        await tx.feeInvoice.create({
+          data: {
+            tenantId: ctx.tenant.id,
+            studentId: student.id,
+            branchId: student.branchId,
+            number: invoiceNumber,
+            title: "Admission & Course Fees",
+            amount: Math.round(netFee * 100),
+            paidAmount: 0,
+            currency: "INR",
+            dueDate,
+            status: dueDate < today ? "OVERDUE" : "PENDING",
+            notes: feeNotes,
+          },
+        });
+      }
+
       return student.id;
     });
   } catch (error) {
@@ -201,6 +292,10 @@ export async function updateStudentAction(_prev: FormState, formData: FormData):
     guardianPhone: formData.get("guardianPhone"),
     guardianEmail: formData.get("guardianEmail"),
     guardianRelation: formData.get("guardianRelation"),
+    batchId: formData.get("batchId"),
+    feeAmount: formData.get("feeAmount") || 0,
+    discountAmount: formData.get("discountAmount") || 0,
+    feeDueDate: formData.get("feeDueDate"),
   });
   if (!parsed.success) return fieldErrors(parsed.error);
 

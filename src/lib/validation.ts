@@ -83,6 +83,10 @@ export const studentSchema = z.object({
   guardianPhone: z.string().trim().max(20).optional().or(z.literal("")),
   guardianEmail: z.string().trim().toLowerCase().email("Enter a valid email").optional().or(z.literal("")),
   guardianRelation: z.string().trim().max(30).optional().or(z.literal("")),
+  batchId: z.string().optional().or(z.literal("")),
+  feeAmount: z.coerce.number().min(0).optional().default(0),
+  discountAmount: z.coerce.number().min(0).optional().default(0),
+  feeDueDate: z.string().optional().or(z.literal("")),
 });
 
 export const classSchema = z.object({

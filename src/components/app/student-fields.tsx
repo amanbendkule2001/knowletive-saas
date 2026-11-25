@@ -33,17 +33,27 @@ type BranchOption = {
   branchType: string;
 };
 
+type BatchOption = {
+  id: string;
+  name: string;
+  code: string;
+};
+
 export function StudentFields({
   classes,
   branches,
+  batches,
   student,
   mode,
+  suggestedAdmissionNo,
   errors,
 }: {
   classes: ClassOption[];
   branches?: BranchOption[];
+  batches?: BatchOption[];
   student?: StudentDefaults | null;
   mode: "create" | "edit";
+  suggestedAdmissionNo?: string;
   errors?: FormState["fieldErrors"];
 }) {
   return (
@@ -79,13 +89,13 @@ export function StudentFields({
           htmlFor="admissionNo"
           required
           error={errors?.admissionNo}
-          hint="Must be unique inside this institute."
+          hint={mode === "create" ? "Auto-generated suggestion. You can edit if your institute uses a custom format." : "Must be unique inside this institute."}
         >
           <input
             id="admissionNo"
             name="admissionNo"
             className="input font-mono"
-            defaultValue={student?.admissionNo ?? ""}
+            defaultValue={student?.admissionNo ?? (mode === "create" ? (suggestedAdmissionNo ?? "") : "")}
             required
           />
         </Field>
@@ -247,6 +257,57 @@ export function StudentFields({
                 <option value="Grandparent">Grandparent</option>
                 <option value="Other">Other</option>
               </select>
+            </Field>
+          </FormGrid>
+
+          <FormIntro
+            title="Batch & Tuition Fee Setup (Optional)"
+            description="Enroll the student directly into an active batch and issue the opening tuition fee invoice in one step."
+          />
+          <FormGrid>
+            {batches && batches.length > 0 && (
+              <Field label="Assign batch" htmlFor="batchId" hint="Auto-enrolls student into the active batch">
+                <select id="batchId" name="batchId" className="select" defaultValue="">
+                  <option value="">No batch assigned</option>
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} ({b.code})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+            <Field label="Course / Admission fee (₹)" htmlFor="feeAmount" hint="Leave 0 if fees are managed later">
+              <input
+                id="feeAmount"
+                name="feeAmount"
+                type="number"
+                min="0"
+                step="1"
+                className="input"
+                placeholder="0"
+                defaultValue=""
+              />
+            </Field>
+            <Field label="Fee concession / discount (₹)" htmlFor="discountAmount" hint="Deducted from fee">
+              <input
+                id="discountAmount"
+                name="discountAmount"
+                type="number"
+                min="0"
+                step="1"
+                className="input"
+                placeholder="0"
+                defaultValue=""
+              />
+            </Field>
+            <Field label="Fee due date" htmlFor="feeDueDate" hint="Defaults to 14 days from today">
+              <input
+                id="feeDueDate"
+                name="feeDueDate"
+                type="date"
+                className="input"
+              />
             </Field>
           </FormGrid>
         </>

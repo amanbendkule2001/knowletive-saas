@@ -6,6 +6,7 @@ import { createLeadAction } from "@/actions/leads";
 import { ActionForm } from "@/components/ui/action-form";
 import { Card, CardHeader, PageHeader } from "@/components/ui/primitives";
 import { Field, FormGrid } from "@/components/ui/form-field";
+import { EditableSelectInput } from "@/components/ui/editable-select-input";
 
 export const metadata = { title: "New Enquiry" };
 
@@ -27,6 +28,40 @@ export default async function NewLeadPage() {
       orderBy: { user: { name: "asc" } },
     }),
   ]);
+
+  // 1. Build class options guaranteed to include Class 1 to Class 12 plus existing classes
+  const defaultClasses = Array.from({ length: 12 }, (_, i) => `Class ${i + 1}`);
+  const existingClassNames = classes.map((c) => c.name);
+  const allClasses = Array.from(new Set([...defaultClasses, ...existingClassNames]));
+  const classOptions = allClasses.map((name) => ({ value: name, label: name }));
+  const classQuickChips = ["Class 8", "Class 9", "Class 10", "Class 11", "Class 12"];
+
+  // 2. Maharashtra Education Boards (4 standard boards + custom text)
+  const boardOptions = [
+    { value: "Maharashtra State Board (SSC / HSC)", label: "Maharashtra State Board (SSC / HSC)" },
+    { value: "CBSE (Central Board of Secondary Education)", label: "CBSE" },
+    { value: "ICSE / ISC (CISCE)", label: "ICSE / ISC" },
+    { value: "IGCSE / IB (International / Cambridge)", label: "IGCSE / IB (Cambridge)" },
+  ];
+  const boardQuickChips = [
+    "Maharashtra State Board",
+    "CBSE",
+    "ICSE",
+    "IGCSE / IB",
+  ];
+
+  // 3. Enquiry Sources with custom editable text support
+  const sourceOptions = [
+    { value: "WALK_IN", label: "Walk-in Visit" },
+    { value: "PHONE", label: "Phone Call" },
+    { value: "WHATSAPP", label: "WhatsApp Enquiry" },
+    { value: "REFERRAL", label: "Parent / Student Referral" },
+    { value: "SOCIAL", label: "Social Media (Instagram/FB)" },
+    { value: "WEBSITE", label: "Website Form" },
+    { value: "PAMPHLET", label: "Pamphlet / Banner / Poster" },
+    { value: "SCHOOL_CAMPAIGN", label: "School Seminar / Campaign" },
+  ];
+  const sourceQuickChips = ["Walk-in Visit", "Phone Call", "WhatsApp Enquiry", "Parent Referral"];
 
   return (
     <div className="space-y-6">
@@ -74,16 +109,26 @@ export default async function NewLeadPage() {
                     <input name="dob" type="date" className="input" />
                   </Field>
                   <Field label="Interested in class">
-                    <select name="classInterested" className="select" defaultValue="">
-                      <option value="">Select class level…</option>
-                      {classes.map((c) => (
-                        <option key={c.id} value={c.name}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
+                    <EditableSelectInput
+                      name="classInterested"
+                      placeholder="e.g. Class 10 (or type custom class)"
+                      options={classOptions}
+                      dropdownPlaceholder="Select class level (1-12)…"
+                      quickChips={classQuickChips}
+                      helperText="Type any custom class or select from Class 1 to 12"
+                    />
                   </Field>
-                  <Field label="Academic year">
+                  <Field label="Education Board">
+                    <EditableSelectInput
+                      name="board"
+                      placeholder="e.g. Maharashtra State Board (or type custom board)"
+                      options={boardOptions}
+                      dropdownPlaceholder="Select Maharashtra board…"
+                      quickChips={boardQuickChips}
+                      helperText="Select 1 of 4 Maharashtra boards or type custom board"
+                    />
+                  </Field>
+                  <Field label="Academic year" className="sm:col-span-2">
                     <select name="academicYearId" className="select" defaultValue="">
                       <option value="">Select academic year…</option>
                       {academicYears.map((ay) => (
@@ -126,13 +171,15 @@ export default async function NewLeadPage() {
                     />
                   </Field>
                   <Field label="Enquiry source">
-                    <select name="source" className="select" defaultValue="WALK_IN">
-                      <option value="WALK_IN">Walk-in Visit</option>
-                      <option value="PHONE">Phone Call</option>
-                      <option value="WEBSITE">Website Form</option>
-                      <option value="REFERRAL">Parent Referral</option>
-                      <option value="SOCIAL">Social Media</option>
-                    </select>
+                    <EditableSelectInput
+                      name="source"
+                      defaultValue="Walk-in Visit"
+                      placeholder="e.g. Walk-in Visit or custom source"
+                      options={sourceOptions}
+                      dropdownPlaceholder="Select enquiry source…"
+                      quickChips={sourceQuickChips}
+                      helperText="Select common source or type custom origin"
+                    />
                   </Field>
                 </FormGrid>
               </div>

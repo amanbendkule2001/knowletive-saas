@@ -8,6 +8,8 @@ import { ActionForm } from "@/components/ui/action-form";
 import { Field, FormGrid } from "@/components/ui/form-field";
 import { Card, PageHeader } from "@/components/ui/primitives";
 import { getOrProvisionAcademicYears } from "@/lib/academic-years";
+import { BatchMultiSubjectFields } from "@/app/(app)/app/batches/new/batch-multi-subject-fields";
+import { BatchScheduleDateFields } from "@/app/(app)/app/batches/new/batch-schedule-date-fields";
 
 export const metadata = { title: "Batch Settings" };
 
@@ -24,6 +26,7 @@ export default async function BatchSettingsPage({
       where: { id, tenantId: ctx.tenant.id },
       include: {
         teachers: true,
+        syllabusTracks: { select: { subjectId: true } },
         _count: { select: { students: { where: { status: "ACTIVE" } } } },
       },
     }),
@@ -55,6 +58,12 @@ export default async function BatchSettingsPage({
   const activeCount = batch._count.students;
   const assignedTeacherIds = new Set(batch.teachers.map((t) => t.teacherId));
   const primaryTeacherId = batch.teachers.find((t) => t.isPrimary)?.teacherId || "";
+  const existingSubjectIds = Array.from(
+    new Set([
+      ...(batch.subjectId ? [batch.subjectId] : []),
+      ...batch.syllabusTracks.map((st) => st.subjectId),
+    ])
+  );
 
   const bindUpdateAction = updateBatchAction.bind(null, batch.id);
 
@@ -128,22 +137,6 @@ export default async function BatchSettingsPage({
               </select>
             </Field>
 
-            <Field label="Subject" htmlFor="subjectId">
-              <select
-                id="subjectId"
-                name="subjectId"
-                defaultValue={batch.subjectId || ""}
-                className="input text-xs w-full"
-              >
-                <option value="">General / Multi-Subject</option>
-                {subjects.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} {s.code ? `(${s.code})` : ""}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
             <Field
               label="Maximum capacity"
               htmlFor="capacity"
@@ -171,38 +164,15 @@ export default async function BatchSettingsPage({
               </select>
             </Field>
 
-            <Field label="Start date" htmlFor="startDate">
-              <input
-                id="startDate"
-                name="startDate"
-                type="date"
-                defaultValue={batch.startDate ? batch.startDate.toISOString().split("T")[0] : ""}
-                className="input text-xs w-full"
-              />
-            </Field>
-
-            <Field label="End date" htmlFor="endDate">
-              <input
-                id="endDate"
-                name="endDate"
-                type="date"
-                defaultValue={batch.endDate ? batch.endDate.toISOString().split("T")[0] : ""}
-                className="input text-xs w-full"
-              />
-            </Field>
+            <BatchMultiSubjectFields subjects={subjects} initialSubjectIds={existingSubjectIds} />
           </FormGrid>
 
-          <div className="mt-4 space-y-4">
-            <Field label="Schedule / Timing" htmlFor="schedule">
-              <input
-                id="schedule"
-                name="schedule"
-                type="text"
-                defaultValue={batch.schedule || ""}
-                placeholder="Mon, Wed, Fri 4:00 PM – 5:30 PM"
-                className="input text-xs w-full"
-              />
-            </Field>
+          <div className="mt-5 space-y-5">
+            <BatchScheduleDateFields
+              initialStartDate={batch.startDate ? batch.startDate.toISOString().split("T")[0] : ""}
+              initialEndDate={batch.endDate ? batch.endDate.toISOString().split("T")[0] : ""}
+              initialSchedule={batch.schedule || ""}
+            />
 
             <Field label="Description" htmlFor="description">
               <textarea

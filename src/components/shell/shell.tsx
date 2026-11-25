@@ -19,6 +19,7 @@ import {
   LogOut,
   Megaphone,
   Menu,
+  PanelLeftClose,
   ScrollText,
   Settings,
   ShieldCheck,
@@ -30,6 +31,7 @@ import {
 import type { NavIcon, NavItem } from "@/components/shell/nav";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { NotificationCenter } from "@/components/notifications/notification-center";
+import { QuickActionsDropdown } from "@/components/shell/quick-actions";
 import { Logo, LogoMark } from "@/components/ui/logo";
 import { Avatar } from "@/components/ui/primitives";
 import { logoutAction, switchTenantAction } from "@/actions/auth";
@@ -106,6 +108,34 @@ export function Shell({
 }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [desktopOpen, setDesktopOpen] = useState(true);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("coachgenie_sidebar_open");
+      if (saved !== null) {
+        setDesktopOpen(saved === "true");
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  function toggleSidebar() {
+    if (typeof window !== "undefined" && window.innerWidth < 1024) {
+      setMobileOpen((prev) => !prev);
+    } else {
+      setDesktopOpen((prev) => {
+        const next = !prev;
+        try {
+          localStorage.setItem("coachgenie_sidebar_open", String(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+    }
+  }
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -135,13 +165,19 @@ export function Shell({
   return (
     <div className="min-h-dvh">
       {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[17rem] flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-30 hidden w-[17rem] flex-col border-r border-[var(--border)] bg-[var(--surface)] transition-transform duration-300 ease-in-out lg:flex",
+          desktopOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"
+        )}
+      >
         <SidebarBody
           area={area}
           user={user}
           tenant={tenant}
           plan={plan}
           navTree={navTree}
+          onToggleCollapse={toggleSidebar}
         />
       </aside>
 
@@ -173,18 +209,25 @@ export function Shell({
         </div>
       )}
 
-      <div className="lg:pl-[17rem]">
+      <div
+        className={cn(
+          "min-h-dvh transition-all duration-300 ease-in-out",
+          desktopOpen ? "lg:pl-[17rem]" : "lg:pl-0"
+        )}
+      >
         <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_82%,transparent)] backdrop-blur-md">
           <div className="flex h-14 items-center justify-between gap-2 px-3 sm:px-5">
             <div className="flex min-w-0 items-center gap-2">
               <button
-                className="btn btn-ghost btn-icon lg:hidden"
-                onClick={() => setMobileOpen(true)}
-                aria-label="Open navigation"
+                type="button"
+                className="btn btn-ghost btn-icon"
+                onClick={toggleSidebar}
+                aria-label="Toggle navigation"
+                title={desktopOpen ? "Hide sidebar" : "Show sidebar"}
               >
                 <Menu className="size-4.5" />
               </button>
-              <div className="min-w-0 lg:hidden">
+              <div className={cn("min-w-0", desktopOpen ? "lg:hidden" : "flex items-center gap-2")}>
                 <LogoMark size={26} />
               </div>
 
@@ -224,6 +267,7 @@ export function Shell({
                   </span>
                 </div>
               )}
+              {area === "app" && <QuickActionsDropdown />}
               <NotificationCenter />
               <ThemeToggle />
               <UserMenu user={user} area={area} />
@@ -250,10 +294,27 @@ function NavLink({
 }) {
   const Icon = icons[item.icon];
   const active = item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`);
+  const hasBadge = item.badge !== undefined && item.badge !== null && item.badge !== 0;
+
   return (
-    <Link href={item.href} className="nav-item" data-active={active} onClick={onNavigate}>
-      <Icon className="size-4 shrink-0" strokeWidth={active ? 2.2 : 1.8} />
-      <span className="truncate">{item.label}</span>
+    <Link
+      href={item.href}
+      className="nav-item group relative flex items-center justify-between gap-2"
+      data-active={active}
+      onClick={onNavigate}
+    >
+      <span className="flex min-w-0 items-center gap-2.5">
+        <Icon className="size-4 shrink-0" strokeWidth={active ? 2.2 : 1.8} />
+        <span className="truncate">{item.label}</span>
+      </span>
+      {hasBadge && (
+        <span
+          className="inline-flex h-4.5 min-w-4.5 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-sm transition-transform duration-150 group-hover:scale-105"
+          title={`${item.badge} recently updated / pending`}
+        >
+          {typeof item.badge === "number" && item.badge > 99 ? "99+" : item.badge}
+        </span>
+      )}
     </Link>
   );
 }
@@ -265,6 +326,7 @@ function SidebarBody({
   plan,
   navTree,
   onNavigate,
+  onToggleCollapse,
 }: {
   area: "platform" | "app";
   user: ShellUser;
@@ -272,11 +334,25 @@ function SidebarBody({
   plan?: ShellPlan;
   navTree: ReactNode;
   onNavigate?: () => void;
+  onToggleCollapse?: () => void;
 }) {
   return (
     <>
-      <div className="flex h-14 items-center border-b border-[var(--border)] px-4" onClick={onNavigate}>
-        <Logo href={area === "platform" ? "/platform" : "/app"} subtitle={area === "platform" ? "Platform" : "Institute"} />
+      <div className="flex h-14 items-center justify-between border-b border-[var(--border)] px-4">
+        <div onClick={onNavigate} className="min-w-0 flex-1">
+          <Logo href={area === "platform" ? "/platform" : "/app"} subtitle={area === "platform" ? "Platform" : "Institute"} />
+        </div>
+        {onToggleCollapse && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            className="btn btn-ghost btn-icon -mr-2 hidden lg:inline-flex"
+            title="Collapse sidebar"
+            aria-label="Collapse sidebar"
+          >
+            <PanelLeftClose className="size-4 text-muted hover:text-[var(--text)]" />
+          </button>
+        )}
       </div>
 
       <nav className="no-scrollbar flex-1 overflow-y-auto px-3 pb-4">

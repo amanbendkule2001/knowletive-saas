@@ -23,6 +23,7 @@ import {
 } from "@/actions/branches";
 import { ActionForm } from "@/components/ui/action-form";
 import { Field, FormGrid, FormIntro } from "@/components/ui/form-field";
+import { BranchNameCodeFields } from "./branch-name-code-fields";
 import {
   Badge,
   Card,
@@ -197,26 +198,8 @@ export default async function BranchesPage() {
                 submitLabel="Create Branch"
                 pendingLabel="Creating…"
               >
-                <Field label="Branch Name" htmlFor="name" required hint="e.g. Sunrise North Campus">
-                  <input
-                    id="name"
-                    name="name"
-                    className="input"
-                    placeholder="Sunrise North Campus"
-                    required
-                  />
-                </Field>
-
                 <FormGrid>
-                  <Field label="Branch Code" htmlFor="code" required hint="e.g. NORTH, EAST">
-                    <input
-                      id="code"
-                      name="code"
-                      className="input uppercase font-mono"
-                      placeholder="NORTH"
-                      required
-                    />
-                  </Field>
+                  <BranchNameCodeFields tenantSlug={ctx.tenant.slug} />
 
                   <Field label="Branch Type" htmlFor="branchType" required>
                     <select id="branchType" name="branchType" className="select" defaultValue="MAIN">
@@ -244,19 +227,6 @@ export default async function BranchesPage() {
                     </select>
                   </Field>
                 )}
-
-                <Field
-                  label="Jodo Collector Code"
-                  htmlFor="collectorCode"
-                  hint="Collector routing code for Jodo multi-branch settlements (e.g. COL-SUN-NORTH)"
-                >
-                  <input
-                    id="collectorCode"
-                    name="collectorCode"
-                    className="input font-mono"
-                    placeholder="COL-SUN-NORTH"
-                  />
-                </Field>
 
                 <FormIntro
                   title="Settlement Bank Account Details"
